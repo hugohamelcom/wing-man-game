@@ -1,0 +1,2468 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - geometry - terrain + fog</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+		<style>
+			body {
+				background-color: #efd1b5;
+				color: #61443e;
+			}
+			a {
+				color: #a06851;
+			}
+			#crash-dialog {
+				position: fixed;
+				top: 50%;
+				left: 50%;
+				transform: translate(-50%, -50%);
+				background-color: rgba(0, 0, 0, 0.8);
+				color: white;
+				padding: 20px;
+				border-radius: 8px;
+				text-align: center;
+				z-index: 1000;
+				display: none;
+				box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+				max-width: 400px;
+			}
+			#crash-dialog h2 {
+				color: #ff5252;
+				margin-top: 0;
+			}
+			#crash-dialog button {
+				background-color: #a06851;
+				border: none;
+				color: white;
+				padding: 10px 20px;
+				margin-top: 15px;
+				border-radius: 4px;
+				cursor: pointer;
+				font-weight: bold;
+				transition: background-color 0.2s;
+			}
+			#crash-dialog button:hover {
+				background-color: #c08871;
+			}
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<div id="info"><a href="https://threejs.org" target="_blank" rel="noopener">Wing Man - Fly a hang glider <br />(wind affects your flight path and speed)</div>
+		
+		<div id="crash-dialog">
+			<h2>You Crashed!</h2>
+			<p>Your wingsuit journey has come to an abrupt end.</p>
+			<p>Press SPACE or click the button below to restart.</p>
+			<button id="restart-button">Restart Flight</button>
+		</div>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://threejs.org/build/three.module.js",
+					"three/addons/": "https://threejs.org/examples/jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+			import * as THREE from 'three';
+
+			import Stats from 'three/addons/libs/stats.module.js';
+			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+			import { FirstPersonControls } from 'three/addons/controls/FirstPersonControls.js';
+			import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
+
+			let container, stats;
+			let camera, controls, scene, renderer;
+			let mesh, texture;
+			let gui;
+
+			// Add new variables for third person view
+			let playerModel;
+			let isThirdPerson = false;
+			const thirdPersonOffset = new THREE.Vector3(0, 2, 10); // Slightly above and behind
+
+			// Add wind system variables
+			let windParticles = [];
+			const windSettings = {
+				enabled: true,
+				direction: new THREE.Vector3(1, 0, 0),
+				speed: 10,
+				particleCount: 1000,
+				particleSize: 2,
+				particleLength: 20,
+				particleOpacity: 0.3,
+				boundarySize: 2000,
+				updateInterval: 0.1,
+				lastUpdate: 0,
+				// Adjust wind dynamics settings for smoother movement
+				dynamics: {
+					directionChangeSpeed: 0.00005,  // Slower direction changes
+					speedChangeSpeed: 0.0002,      // Slower speed changes
+					minSpeed: 5,
+					maxSpeed: 25,
+					turbulence: 0.1,              // Reduced turbulence
+					verticalVariation: 0.05,       // Reduced vertical variation
+					// Add new wind dynamics properties
+					gustProbability: 0.001,        // Probability of a gust per frame
+					gustMaxDuration: 3.0,          // Max duration of a gust in seconds
+					gustMinDuration: 1.0,          // Min duration of a gust in seconds
+					gustIntensityMin: 1.5,         // Minimum gust intensity multiplier
+					gustIntensityMax: 2.0,         // Maximum gust intensity multiplier
+					windGradientFactor: 0.0002,    // Wind increases with altitude
+					terrainInfluenceFactor: 0.5,   // How much terrain affects wind
+					terrainCheckRadius: 100        // Radius to check for terrain features
+				},
+				// Add gust state tracking
+				gust: {
+					active: false,
+					endTime: 0,
+					originalSpeed: 0,
+					intensity: 0
+				},
+				// Add wind indicators
+				indicators: {
+					relativeDirection: 0,  // Wind direction relative to player (degrees)
+					crosswindComponent: 0, // Crosswind strength
+					verticalComponent: 0,  // Updraft/downdraft strength
+					terrainEffect: 0       // Effect of terrain on wind (0-1)
+				}
+			};
+
+			// Add cloud system variables
+			let cloudClusters = [];
+			const cloudSettings = {
+				enabled: true,
+				count: 5,
+				size: 400,
+				height: {
+					low: {
+						min: 400,
+						max: 800
+					},
+					mid: {
+						min: 800,
+						max: 1250
+					},
+					high: {
+						min: 1250,
+						max: 1750
+					}
+				},
+				spread: 2000,
+				threshold: {
+					min: 0.15,
+					max: 0.35,
+					default: 0.25
+				},
+				opacity: {
+					low: {
+						min: 0.2,
+						max: 0.4
+					},
+					mid: {
+						min: 0.15,
+						max: 0.3
+					},
+					high: {
+						min: 0.1,
+						max: 0.2
+					}
+				},
+				range: {
+					min: 0.03,
+					max: 0.09,
+					default: 0.06
+				},
+				steps: {
+						min: 80,
+						max: 120,
+						default: 100
+				},
+				noiseScale: {
+					base: 0.15,
+					vertical: 0.25,
+					detail: 0.4
+				},
+				rotationSpeed: 0.00005,
+				verticalStretch: 0.4,
+				distribution: {
+					low: 0.4,    // 40% of clouds
+					mid: 0.35,   // 35% of clouds
+					high: 0.25   // 25% of clouds
+				}
+			};
+
+			const worldWidth = 256, worldDepth = 256;
+			const clock = new THREE.Clock();
+			
+			// Game settings
+			const settings = {
+				enableBoundaries: true,
+				boundarySize: 4000,
+				minHeight: 10,
+				maxHeight: 1500, // Add maximum height limit
+				// Movement settings
+				baseSpeed: 100,
+				minSpeed: 10,  // Reduced from 100 to allow near-stall speeds
+				maxSpeed: 400, // Increased from 200 for higher top speed
+				speedChange: 25,
+				currentSpeed: 100,
+				// Physics settings
+				gravity: {
+					baseValue: 9.8,    // Base gravity in m/s²
+					current: 9.8,      // Current effective gravity
+					multiplierWhenGliding: 1.0,       // Normal gravity when gliding
+					pitchFactor: 0.05,  // How much pitch affects gravity
+					liftFactor: 0.5,    // How much speed reduces gravity (lower = less reduction)
+					speedFactor: 1.4,   // How much low speed increases gravity
+					minSpeedRatio: 0.3  // Speed ratio below which gravity increases exponentially
+				},
+				// Control flags
+				accelerating: false,
+				// Game state
+				crashed: false,
+				// Terrain data
+				terrain: {
+					data: null, // Will hold the terrain height data
+					scale: 10,  // Height scale factor (matches the value used in init function)
+					worldSize: 10000 // Size of the terrain plane (matches geometry size in init)
+				},
+				// Fog settings
+				enableFog: true,
+				fogDensity: 0.0009, // 0.0035
+				// Flight data (for display only)
+				flightData: {
+					pitch: 0,      // Degrees, positive is up
+					bank: 0,       // Degrees, positive is right tilt
+					altitude: 0,   // Current height
+					verticalSpeed: 0 // Vertical speed in m/s
+				},
+				// Debug settings
+				logging: {
+					enabled: true,
+					interval: 1000, // Log every 1 second
+					lastLogTime: 0,
+					lastBankLogTime: 0,     // For detailed bank logging
+					lastBankVectorLogTime: 0, // For logging camera up vector
+					lastSpeedLogTime: 0,      // For pitch-speed effect logging
+					lastSpeedChangeLogTime: 0, // For acceleration speed changes
+					lastDiveSpeedLogTime: 0,   // For dive speed increases
+					lastClimbSpeedLogTime: 0,  // For climb speed decreases
+					lastNormalizeSpeedLogTime: 0 // For speed normalizing
+				},
+				// Bank angle tracking
+				bankTracking: {
+					angle: 0,            // Target bank angle from mouse movement
+					currentVisualBank: 0, // Current visual bank angle (for smooth transitions)
+					bankEaseSpeed: 2.0,   // How fast the camera eases into the new bank angle (higher = faster)
+					lastMouseX: 0,
+					mouseDelta: 0
+				},
+				// Player model settings
+				playerModel: {
+					offset: new THREE.Vector3(0, -1, 0), // Position relative to camera
+					scale: new THREE.Vector3(1, 1, 1),   // Model scale
+					rotation: new THREE.Vector3(0, 0, 0)  // Model rotation in radians
+				}
+			};
+
+			// Add cloud lifecycle management variables
+			const cloudLifecycle = {
+				minClouds: 20,  // Minimum number of clouds
+				maxClouds: 40,  // Maximum number of clouds based on terrain size
+				spawnInterval: 5000,  // Time between cloud spawn attempts (ms)
+				lastSpawnTime: 0,
+				fadeInDuration: 5000,  // Time to fade in (ms)
+				fadeOutDuration: 8000, // Time to fade out (ms)
+				// Track cloud states
+				states: new Map(),  // Map to store cloud states
+				// Cloud state object structure:
+				// {
+				//     phase: 'spawning' | 'active' | 'despawning',
+				//     startTime: number,
+				//     targetThreshold: number,
+				//     originalPosition: Vector3,
+				//     windOffset: Vector3
+				// }
+			};
+
+			// Add after wind and cloud settings
+			const ringSettings = {
+				enabled: true,
+				count: 10,          // Increased number of rings
+				radius: 45,        // Increased ring size
+				tubeRadius: 3,     // Slightly thicker tube
+				segments: 32,      // Ring detail
+				color: 0xffff00,   // Ring color
+				activeColor: 0x00ff00,  // Color when approaching
+				clearedColor: 0x444444, // Color after passing through
+				respawnTime: 10000,    // Time before new ring spawns (ms)
+				minSpawnHeight: 200,   // Minimum spawn height
+				maxSpawnHeight: 1200,  // Maximum spawn height
+				speedBoost: 25,        // Speed boost when passing through
+				boostDuration: 2000,   // Duration of speed boost (ms)
+				detectionRadius: 50,   // Increased detection radius for easier passing
+				minDistanceApart: 300, // Increased minimum distance between rings
+				rings: [],            // Array to store ring objects
+				clearedRings: 0,      // Counter for cleared rings
+				currentBoost: {
+					active: false,
+					endTime: 0
+				}
+			};
+
+			init();
+
+			async function init() {
+
+				container = document.getElementById( 'container' );
+
+				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 1, 10000 );
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xefd1b5 );
+				scene.fog = new THREE.FogExp2( 0xefd1b5, settings.fogDensity );
+
+				// Initialize clouds before wind particles
+				initClouds();
+				
+				// Initialize wind particles
+				initWindParticles();
+
+				const data = generateHeight( worldWidth, worldDepth );
+				
+				// Store terrain data for collision detection
+				settings.terrain.data = data;
+
+				camera.position.set( 100, 800, - 800 );
+				camera.lookAt( - 100, 810, - 800 );
+
+				const geometry = new THREE.PlaneGeometry( 10000, 10000, worldWidth - 1, worldDepth - 1 );
+				geometry.rotateX( - Math.PI / 2 );
+
+				const vertices = geometry.attributes.position.array;
+
+				for ( let i = 0, j = 0, l = vertices.length; i < l; i ++, j += 3 ) {
+
+					vertices[ j + 1 ] = data[ i ] * 10;
+
+				}
+
+				texture = new THREE.CanvasTexture( generateTexture( data, worldWidth, worldDepth ) );
+				texture.wrapS = THREE.ClampToEdgeWrapping;
+				texture.wrapT = THREE.ClampToEdgeWrapping;
+				texture.colorSpace = THREE.SRGBColorSpace;
+
+				mesh = new THREE.Mesh( geometry, new THREE.MeshBasicMaterial( { map: texture } ) );
+				scene.add( mesh );
+
+				// Add flag texture loading function
+				function getCountryFlagTexture() {
+					// Get browser language
+					const browserLang = navigator.language.toLowerCase();
+					
+					// Map language codes to country codes for flags
+					const langToCountry = {
+						'en-us': 'us',
+						'en-gb': 'gb',
+						'en-ca': 'ca',
+						'fr-fr': 'fr',
+						'fr-ca': 'ca',
+						'es-es': 'es',
+						'de-de': 'de',
+						'it-it': 'it',
+						'pt-br': 'br',
+						'pt-pt': 'pt',
+						// Add more mappings as needed
+					};
+
+					// Get country code, default to 'us' if not found
+					const countryCode = langToCountry[browserLang] || browserLang.split('-')[1] || 'us';
+					
+					// Create texture loader
+					const textureLoader = new THREE.TextureLoader();
+					
+					// Load flag texture from flagcdn.com (free flag API)
+					const flagUrl = `https://flagcdn.com/w640/${countryCode}.png`;
+					
+					// Log for debugging
+					console.log(`🏳️ Loading flag for language: ${browserLang}, country: ${countryCode}`);
+					console.log(`🔗 Flag URL: ${flagUrl}`);
+
+					return new Promise((resolve, reject) => {
+						textureLoader.load(
+							flagUrl,
+							(texture) => {
+								// Configure texture for better appearance
+								texture.colorSpace = THREE.SRGBColorSpace;
+								texture.wrapS = THREE.ClampToEdgeWrapping;
+								texture.wrapT = THREE.ClampToEdgeWrapping;
+								texture.minFilter = THREE.LinearFilter;
+								texture.magFilter = THREE.LinearFilter;
+								resolve(texture);
+							},
+							undefined,
+							(error) => {
+								console.error('Error loading flag texture:', error);
+								// Load default texture (US flag) as fallback
+								textureLoader.load(
+									'https://flagcdn.com/w640/us.png',
+									(texture) => resolve(texture),
+									undefined,
+									(error) => reject(error)
+								);
+							}
+						);
+					});
+				}
+
+				// Modify the createGliderModel function to use the flag texture
+				const createGliderModel = async () => {
+					const group = new THREE.Group();
+
+					// Load flag texture
+					const flagTexture = await getCountryFlagTexture();
+
+					// Create two separate triangles for top and bottom of wing
+					const wingGeometry = new THREE.BufferGeometry();
+					
+					// Vertices for both triangles (top and bottom)
+					const wingVertices = new Float32Array([
+						// Top triangle
+						0, 0.01, -2,     // front point (back)
+						-3, 0.01, 2,     // left point (front)
+						3, 0.01, 2,      // right point (front)
+						// Bottom triangle
+						0, -0.01, -2,    // front point (back)
+						-3, -0.01, 2,    // left point (front)
+						3, -0.01, 2      // right point (front)
+					]);
+					
+					// UV coordinates - rotated 180° for top, normal for bottom
+					const uvs = new Float32Array([
+						// Top triangle (rotated 180°)
+						0.5, 1,      // front point
+						1, 0,        // left point
+						0, 0,        // right point
+						// Bottom triangle (normal orientation)
+						0.5, 0,      // front point
+						0, 1,        // left point
+						1, 1         // right point
+					]);
+					
+					// Define indices to create the triangles
+					const indices = new Uint16Array([
+						0, 1, 2,     // Top triangle
+						5, 4, 3      // Bottom triangle (reversed order for correct normal)
+					]);
+					
+					wingGeometry.setAttribute('position', new THREE.BufferAttribute(wingVertices, 3));
+					wingGeometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+					wingGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+					
+					const wingMaterial = new THREE.MeshBasicMaterial({ 
+						map: flagTexture,
+						side: THREE.DoubleSide
+					});
+					const wing = new THREE.Mesh(wingGeometry, wingMaterial);
+
+					// Pilot body (capsule - made from cylinder + spheres)
+					const bodyGroup = new THREE.Group();
+					
+					// Center cylinder
+					const cylinderGeometry = new THREE.CylinderGeometry(0.3, 0.3, 1.0, 16);
+					// Sphere caps
+					const sphereGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+					const bodyMaterial = new THREE.MeshBasicMaterial({ color: 0x333333 });
+					
+					// Create the three parts of the capsule
+					const cylinder = new THREE.Mesh(cylinderGeometry, bodyMaterial);
+					const sphereFront = new THREE.Mesh(sphereGeometry, bodyMaterial);
+					const sphereBack = new THREE.Mesh(sphereGeometry, bodyMaterial);
+					
+					// Position the sphere caps
+					sphereFront.position.y = 0.5;  // Half the cylinder height
+					sphereBack.position.y = -0.5;  // Half the cylinder height
+					
+					// Add all parts to the body group
+					bodyGroup.add(cylinder);
+					bodyGroup.add(sphereFront);
+					bodyGroup.add(sphereBack);
+
+					// Create handle bar
+					const handleBarGroup = new THREE.Group();
+					
+					// Main horizontal bar
+					const handleGeometry = new THREE.CylinderGeometry(0.05, 0.05, 1.2, 8);
+					const handleMaterial = new THREE.MeshBasicMaterial({ color: 0x444444 });
+					const handleBar = new THREE.Mesh(handleGeometry, handleMaterial);
+					handleBar.rotation.z = Math.PI / 2; // Make it horizontal
+					
+					// Add vertical supports (connecting to the wing)
+					const supportGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.4, 8);
+					const supportMaterial = new THREE.MeshBasicMaterial({ color: 0x444444 });
+					
+					// Left support
+					const leftSupport = new THREE.Mesh(supportGeometry, supportMaterial);
+					leftSupport.position.x = -0.4;
+					
+					// Right support
+					const rightSupport = new THREE.Mesh(supportGeometry, supportMaterial);
+					rightSupport.position.x = 0.4;
+					
+					// Add all parts to the handle bar group
+					handleBarGroup.add(handleBar);
+					handleBarGroup.add(leftSupport);
+					handleBarGroup.add(rightSupport);
+					
+					// Position handle bar group below the capsule
+					handleBarGroup.position.set(0, -0.7, 0);
+					
+					// Rotate and position the entire body
+					bodyGroup.rotation.x = Math.PI / 2; // Rotate to align with wing
+					bodyGroup.position.set(0, -0.3, 0.5); // Moved back by -0.5 in Z axis
+					
+					// Add all parts to the main group
+					group.add(wing);
+					group.add(bodyGroup);
+					group.add(handleBarGroup);
+
+					// Rotate entire model to face forward
+					group.rotation.y = Math.PI; // Rotate 180° to face forward
+
+					return group;
+				};
+
+				// Modify the player model creation to handle async
+				async function initPlayerModel() {
+					playerModel = await createGliderModel();
+					scene.add(playerModel);
+					playerModel.visible = false;
+				}
+
+				// Call the async initialization
+				await initPlayerModel();
+
+				renderer = new THREE.WebGLRenderer();
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.setAnimationLoop( animate );
+				container.appendChild( renderer.domElement );
+
+				controls = new FirstPersonControls( camera, renderer.domElement );
+				controls.lookSpeed = 0.1;
+				controls.activeLook = true;
+				controls.lookVertical = true;  // Enable vertical look (pitch)
+				controls.verticalMin = Math.PI / 2.5; // Limit looking too far down
+				controls.verticalMax = Math.PI / 1.5; // Limit looking too far up
+				
+				// Completely disable FirstPersonControls movement
+				controls.autoForward = false;
+				controls.moveForward = false;
+				controls.moveBackward = false;
+				controls.moveLeft = false;
+				controls.moveRight = false;
+				
+				// Mouse controls - only trigger once on press, not continuously
+				/*document.addEventListener('mousedown', function(event) {
+					event.preventDefault(); // Prevent default behavior
+				});*/
+				
+				// Keyboard controls
+				document.addEventListener('keydown', function(event) {
+					if (event.key === ' ' && settings.crashed) { // Space bar for restart
+						restartGame();
+					} else if (event.key === 'v') { // Add view toggle
+						isThirdPerson = !isThirdPerson;
+						playerModel.visible = isThirdPerson;
+						console.log(`👁️ View changed to ${isThirdPerson ? 'third' : 'first'} person`);
+					}
+				});
+				
+				// Mouse move event for bank angle calculation
+				document.addEventListener('mousemove', function(event) {
+					// Calculate mouse delta for banking effect
+					if (settings.bankTracking.lastMouseX !== 0) {
+						settings.bankTracking.mouseDelta = event.clientX - settings.bankTracking.lastMouseX;
+						
+						// Log mouse movement for debugging banking behavior
+						if (settings.logging.enabled && Math.abs(settings.bankTracking.mouseDelta) > 10) {
+							const turnDirection = settings.bankTracking.mouseDelta > 0 ? 'RIGHT' : 'LEFT';
+							// Moving mouse right should make aircraft bank left (negative angle) in aircraft convention
+							const expectedBankDirection = settings.bankTracking.mouseDelta > 0 ? 'LEFT (negative angle)' : 'RIGHT (positive angle)';
+							console.log(`🖱️ Mouse moving ${turnDirection} (${Math.abs(settings.bankTracking.mouseDelta)}px) → Banking ${expectedBankDirection}`);
+						}
+						
+						// Store old bank angle for logging
+						const oldBankAngle = settings.bankTracking.angle;
+						
+						// Scale bank angle based on mouse movement (faster movement = steeper bank)
+						// INVERT the relationship: mouse right -> negative bank (left banking)
+						settings.bankTracking.angle -= settings.bankTracking.mouseDelta * 0.1;
+						// Apply damping to gradually return to level
+						settings.bankTracking.angle *= 0.9; // Increased from 0.95 for faster return to level
+						// Clamp to reasonable bank angles
+						settings.bankTracking.angle = THREE.MathUtils.clamp(settings.bankTracking.angle, -45, 45);
+						
+						// Log significant bank angle changes from mouse movement
+						if (settings.logging.enabled && Math.abs(oldBankAngle - settings.bankTracking.angle) > 2) {
+							// In aviation convention: positive bank = right bank in aviation
+							const wingPosition = settings.bankTracking.angle > 0 ? 'RIGHT wing down, LEFT wing up' : 'LEFT wing down, RIGHT wing up';
+							console.log(`🔄 Bank angle updated: ${oldBankAngle.toFixed(1)}° → ${settings.bankTracking.angle.toFixed(1)}° (${wingPosition})`);
+						}
+					}
+					settings.bankTracking.lastMouseX = event.clientX;
+				});
+
+				// Prevent context menu on right click
+				document.addEventListener('contextmenu', function(event) {
+					event.preventDefault();
+				});
+
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
+				// Initialize flight data with valid values to prevent NaN in GUI
+				// This needs to happen before setupGUI is called
+				const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+				settings.flightData.pitch = -THREE.MathUtils.radToDeg(euler.x) || 0;
+				settings.flightData.bank = 0;
+				settings.flightData.altitude = Math.floor(camera.position.y) || 800;
+				settings.flightData.verticalSpeed = 0;
+				
+				// Custom up vector for camera to implement banking - MUST BE BEFORE updateFlightPhysics is called
+				camera.originalUp = new THREE.Vector3(0, 1, 0); // Store original up vector
+				camera.bankedUp = new THREE.Vector3(0, 1, 0);   // This will be modified based on bank angle
+				camera.up.copy(camera.originalUp);              // Initialize with normal up vector
+				
+				// Force one frame update to ensure all values are calculated
+				updateFlightPhysics(0.016); // Simulate a 16ms frame
+
+				// Now that all values are properly initialized, set up the GUI
+				setupGUI();
+
+				// Add restart button event listener
+				document.getElementById('restart-button').addEventListener('click', restartGame);
+
+				//
+
+				window.addEventListener( 'resize', onWindowResize );
+
+				// Add after initClouds() call in init()
+				initRings();
+
+			}
+
+			function setupGUI() {
+				gui = new GUI();
+				
+				// Add wind controls with new dynamics settings
+				const windFolder = gui.addFolder('Wind');
+				windFolder.add(windSettings, 'enabled').name('Enable Wind');
+				windFolder.add(windSettings, 'speed', 0, 30).name('Current Speed (m/s)').listen();
+				windFolder.add(windSettings.dynamics, 'minSpeed', 0, 20).name('Min Speed (m/s)');
+				windFolder.add(windSettings.dynamics, 'maxSpeed', 5, 40).name('Max Speed (m/s)');
+				windFolder.add(windSettings.dynamics, 'directionChangeSpeed', 0.00001, 0.001).name('Direction Change Rate');
+				windFolder.add(windSettings.dynamics, 'speedChangeSpeed', 0.0001, 0.001).name('Speed Change Rate');
+				windFolder.add(windSettings.dynamics, 'turbulence', 0, 1).name('Turbulence');
+				windFolder.add(windSettings.dynamics, 'verticalVariation', 0, 0.5).name('Vertical Variation');
+				windFolder.add(windSettings.dynamics, 'windGradientFactor', 0, 0.001).name('Altitude Effect');
+				windFolder.add(windSettings.dynamics, 'terrainInfluenceFactor', 0, 1).name('Terrain Effect');
+				windFolder.add(windSettings.dynamics, 'gustProbability', 0, 0.01).name('Gust Probability');
+				
+				// Add wind indicators folder
+				const windIndicatorsFolder = gui.addFolder('Wind Indicators');
+				windIndicatorsFolder.add(windSettings.indicators, 'relativeDirection', -180, 180).name('Relative Direction (°)').listen();
+				windIndicatorsFolder.add(windSettings.indicators, 'crosswindComponent', -30, 30).name('Crosswind (m/s)').listen();
+				windIndicatorsFolder.add(windSettings.indicators, 'verticalComponent', -10, 10).name('Vertical Flow (m/s)').listen();
+				windIndicatorsFolder.add(windSettings.indicators, 'terrainEffect', 0, 1).name('Terrain Effect').listen();
+				windIndicatorsFolder.add(windSettings.gust, 'active').name('Gust Active').listen();
+				
+				// Existing particle appearance controls
+				const particleFolder = gui.addFolder('Wind Particles');
+				particleFolder.add(windSettings, 'particleCount', 0, 2000).name('Particle Count')
+					.onChange(value => {
+						windParticles.forEach(particle => scene.remove(particle));
+						windParticles = [];
+						windSettings.particleCount = value;
+						initWindParticles();
+					});
+				particleFolder.add(windSettings, 'particleOpacity', 0, 1).name('Particle Opacity')
+					.onChange(value => {
+						windParticles.forEach(particle => {
+							particle.material.opacity = value;
+						});
+					});
+				particleFolder.add(windSettings, 'particleSize', 0.1, 5).name('Particle Size')
+					.onChange(value => {
+						windParticles.forEach(particle => {
+							particle.scale.set(value, value, value);
+						});
+					});
+				
+				windFolder.open();
+				particleFolder.open();
+
+				// Add flight data indicators with formatters to handle potential NaN values
+				const flightDataFolder = gui.addFolder('Flight Data');
+				// Add custom formatters to handle potential NaN values
+				flightDataFolder.add(settings.flightData, 'pitch')
+					.listen()
+					.name('Pitch (°)')
+					.onChange(value => {
+						// Ensure value is a number
+						if (isNaN(value)) {
+							settings.flightData.pitch = 0;
+						}
+					});
+				
+				flightDataFolder.add(settings.flightData, 'bank')
+					.listen()
+					.name('Bank (°)')
+					.onChange(value => {
+						// Ensure value is a number
+						if (isNaN(value)) {
+							settings.flightData.bank = 0;
+						}
+					});
+				
+				flightDataFolder.add(settings.flightData, 'altitude')
+					.listen()
+					.name('Altitude (m)');
+				
+				flightDataFolder.add(settings.flightData, 'verticalSpeed')
+					.listen()
+					.name('Vertical Speed (m/s)');
+				
+				flightDataFolder.open();
+				
+				// Add physics controls
+				const physicsFolder = gui.addFolder('Physics');
+				physicsFolder.add(settings.gravity, 'baseValue', 0, 20).name('Base Gravity (m/s²)');
+				physicsFolder.add(settings.gravity, 'multiplierWhenGliding', 0, 3).name('Gravity When Gliding');
+				physicsFolder.add(settings.gravity, 'pitchFactor', 0, 0.2).name('Pitch Effect');
+				physicsFolder.add(settings.gravity, 'liftFactor', 0, 1).name('Lift Strength');
+				physicsFolder.add(settings.gravity, 'current')
+					.listen()
+					.name('Current Gravity')
+					.onChange(value => {
+						// Ensure value is a number
+						if (isNaN(value)) {
+							settings.gravity.current = settings.gravity.baseValue;
+						}
+					});
+				physicsFolder.open();
+				
+				// Add movement controls
+				const movementFolder = gui.addFolder('Movement');
+				movementFolder.add(settings, 'baseSpeed', 50, 300).name('Base Speed');
+				movementFolder.add(settings, 'minSpeed', 50, 200).name('Min Speed');
+				movementFolder.add(settings, 'maxSpeed', 200, 500).name('Max Speed');
+				movementFolder.add(settings, 'speedChange', 10, 100).name('Speed Change');
+				movementFolder.add(settings, 'currentSpeed').listen().name('Current Speed');
+				movementFolder.open();
+				
+				// Add bank control settings
+				const bankControlFolder = gui.addFolder('Bank Controls');
+				bankControlFolder.add(settings.bankTracking, 'bankEaseSpeed', 0.5, 5.0).name('Bank Easing Speed');
+				bankControlFolder.add(settings.bankTracking, 'currentVisualBank').listen().name('Current Visual Bank');
+				bankControlFolder.open();
+				
+				// Add debug controls
+				const boundariesFolder = gui.addFolder('Boundaries');
+				boundariesFolder.add(settings, 'enableBoundaries').name('Enable Boundaries');
+				boundariesFolder.add(settings, 'boundarySize', 1000, 6000).name('Boundary Size');
+				boundariesFolder.add(settings, 'minHeight', 0, 1000).name('Min Height');
+				boundariesFolder.add(settings, 'maxHeight', 1000, 8000).name('Max Height'); // Add max height control
+				boundariesFolder.open();
+				
+				// Add debug logging controls
+				const debugFolder = gui.addFolder('Debug');
+				debugFolder.add(settings.logging, 'enabled').name('Enable Console Logs');
+				debugFolder.add(settings.logging, 'interval', 100, 5000).name('Log Interval (ms)');
+				debugFolder.add(settings, 'crashed').listen().name('Crashed State');
+				debugFolder.open();
+				
+				// Add fog controls
+				const fogFolder = gui.addFolder('Fog');
+				fogFolder.add(settings, 'enableFog').name('Enable Fog').onChange(value => {
+					if (value) {
+						scene.fog = new THREE.FogExp2(0xefd1b5, settings.fogDensity);
+					} else {
+						scene.fog = null;
+					}
+				});
+				fogFolder.add(settings, 'fogDensity', 0, 0.01, 0.0001).name('Fog Density').onChange(value => {
+					if (settings.enableFog) {
+						scene.fog = new THREE.FogExp2(0xefd1b5, value);
+					}
+				});
+				fogFolder.open();
+
+				// Add player model controls
+				const playerModelFolder = gui.addFolder('Player Model');
+				playerModelFolder.add(settings.playerModel.offset, 'x', -5, 5, 0.1).name('Offset X');
+				playerModelFolder.add(settings.playerModel.offset, 'y', -5, 5, 0.1).name('Offset Y');
+				playerModelFolder.add(settings.playerModel.offset, 'z', -5, 5, 0.1).name('Offset Z');
+				playerModelFolder.add(settings.playerModel.scale, 'x', 0.1, 5, 0.1).name('Scale X');
+				playerModelFolder.add(settings.playerModel.scale, 'y', 0.1, 5, 0.1).name('Scale Y');
+				playerModelFolder.add(settings.playerModel.scale, 'z', 0.1, 5, 0.1).name('Scale Z');
+				playerModelFolder.add(settings.playerModel.rotation, 'x', -Math.PI, Math.PI, 0.1).name('Rotation X');
+				playerModelFolder.add(settings.playerModel.rotation, 'y', -Math.PI, Math.PI, 0.1).name('Rotation Y');
+				playerModelFolder.add(settings.playerModel.rotation, 'z', -Math.PI, Math.PI, 0.1).name('Rotation Z');
+				playerModelFolder.open();
+
+				// Add cloud controls
+				const cloudFolder = gui.addFolder('Clouds');
+				cloudFolder.add(cloudSettings, 'enabled').name('Enable Clouds');
+				cloudFolder.add(cloudSettings.threshold, 'min', 0.15, 0.35, 0.01).name('Min Threshold').onChange(updateCloudThresholds);
+				cloudFolder.add(cloudSettings.threshold, 'max', 0.15, 0.35, 0.01).name('Max Threshold').onChange(updateCloudThresholds);
+				cloudFolder.add(cloudSettings.range, 'min', 0.03, 0.09, 0.01).name('Min Range').onChange(updateCloudRanges);
+				cloudFolder.add(cloudSettings.range, 'max', 0.03, 0.09, 0.01).name('Max Range').onChange(updateCloudRanges);
+				cloudFolder.add(cloudSettings.opacity.low, 'min', 0.1, 0.4, 0.01).name('Low Cloud Min Opacity').onChange(updateCloudOpacity);
+				cloudFolder.add(cloudSettings.opacity.low, 'max', 0.1, 0.4, 0.01).name('Low Cloud Max Opacity').onChange(updateCloudOpacity);
+				cloudFolder.add(cloudSettings.opacity.mid, 'min', 0.1, 0.3, 0.01).name('Mid Cloud Min Opacity').onChange(updateCloudOpacity);
+				cloudFolder.add(cloudSettings.opacity.mid, 'max', 0.1, 0.3, 0.01).name('Mid Cloud Max Opacity').onChange(updateCloudOpacity);
+				cloudFolder.add(cloudSettings.opacity.high, 'min', 0.1, 0.2, 0.01).name('High Cloud Min Opacity').onChange(updateCloudOpacity);
+				cloudFolder.add(cloudSettings.opacity.high, 'max', 0.1, 0.2, 0.01).name('High Cloud Max Opacity').onChange(updateCloudOpacity);
+				cloudFolder.add(cloudSettings.steps, 'min', 80, 120, 1).name('Min Steps').onChange(updateCloudSteps);
+				cloudFolder.add(cloudSettings.steps, 'max', 80, 120, 1).name('Max Steps').onChange(updateCloudSteps);
+				cloudFolder.add(cloudSettings, 'rotationSpeed', 0, 0.001, 0.00001).name('Cloud Rotation');
+				cloudFolder.open();
+
+				// Add cloud update functions
+				function updateCloudThresholds() {
+					// Ensure min doesn't exceed max
+					cloudSettings.threshold.min = Math.min(cloudSettings.threshold.min, cloudSettings.threshold.max);
+					cloudSettings.threshold.max = Math.max(cloudSettings.threshold.min, cloudSettings.threshold.max);
+					
+					// Update all clouds with new random values within range
+					cloudClusters.forEach(cloud => {
+						cloud.material.uniforms.threshold.value = cloudSettings.threshold.min + 
+							Math.random() * (cloudSettings.threshold.max - cloudSettings.threshold.min);
+					});
+				}
+
+				function updateCloudRanges() {
+					// Ensure min doesn't exceed max and stays within bounds
+					cloudSettings.range.min = Math.max(0.03, Math.min(cloudSettings.range.min, cloudSettings.range.max));
+					cloudSettings.range.max = Math.min(0.09, Math.max(cloudSettings.range.min, cloudSettings.range.max));
+					
+					// Update all clouds with new random values within range
+					cloudClusters.forEach(cloud => {
+						cloud.material.uniforms.range.value = cloudSettings.range.min + 
+							Math.random() * (cloudSettings.range.max - cloudSettings.range.min);
+					});
+				}
+
+				function updateCloudOpacity() {
+					// Ensure min doesn't exceed max
+					cloudSettings.opacity.low.min = Math.min(cloudSettings.opacity.low.min, cloudSettings.opacity.low.max);
+					cloudSettings.opacity.low.max = Math.max(cloudSettings.opacity.low.min, cloudSettings.opacity.low.max);
+					cloudSettings.opacity.mid.min = Math.min(cloudSettings.opacity.mid.min, cloudSettings.opacity.mid.max);
+					cloudSettings.opacity.mid.max = Math.max(cloudSettings.opacity.mid.min, cloudSettings.opacity.mid.max);
+					cloudSettings.opacity.high.min = Math.min(cloudSettings.opacity.high.min, cloudSettings.opacity.high.max);
+					cloudSettings.opacity.high.max = Math.max(cloudSettings.opacity.high.min, cloudSettings.opacity.high.max);
+					
+					// Update all clouds with new random values within range
+					cloudClusters.forEach(cloud => {
+						cloud.material.uniforms.opacity.value = cloudSettings.opacity.low.min + 
+							Math.random() * (cloudSettings.opacity.low.max - cloudSettings.opacity.low.min);
+					});
+				}
+
+				function updateCloudSteps() {
+					// Ensure min doesn't exceed max
+					cloudSettings.steps.min = Math.min(cloudSettings.steps.min, cloudSettings.steps.max);
+					cloudSettings.steps.max = Math.max(cloudSettings.steps.min, cloudSettings.steps.max);
+					
+					// Update all clouds with new random values within range
+					cloudClusters.forEach(cloud => {
+						cloud.material.uniforms.steps.value = Math.floor(cloudSettings.steps.min + 
+							Math.random() * (cloudSettings.steps.max - cloudSettings.steps.min));
+					});
+				}
+
+				// Add ring controls
+				const ringFolder = gui.addFolder('Ring Checkpoints');
+				ringFolder.add(ringSettings, 'enabled').name('Enable Rings');
+				ringFolder.add(ringSettings, 'count', 1, 20, 1).name('Ring Count')
+					.onChange(value => {
+						// Remove existing rings
+						ringSettings.rings.forEach(ring => scene.remove(ring));
+						ringSettings.rings = [];
+						// Create new rings
+						ringSettings.count = value;
+						initRings();
+					});
+				ringFolder.add(ringSettings, 'radius', 10, 50).name('Ring Size');
+				ringFolder.add(ringSettings, 'speedBoost', 10, 100).name('Speed Boost');
+				ringFolder.add(ringSettings, 'boostDuration', 500, 5000).name('Boost Duration (ms)');
+				ringFolder.add(ringSettings, 'clearedRings').name('Rings Cleared').listen();
+				ringFolder.open();
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+				controls.handleResize();
+
+			}
+
+			function generateHeight( width, height ) {
+
+				let seed = Math.PI / 4;
+				window.Math.random = function () {
+
+					const x = Math.sin( seed ++ ) * 10000;
+					return x - Math.floor( x );
+
+				};
+
+				const size = width * height, data = new Uint8Array( size );
+				const perlin = new ImprovedNoise(), z = Math.random() * 100;
+
+				let quality = 1;
+
+				for ( let j = 0; j < 4; j ++ ) {
+
+					for ( let i = 0; i < size; i ++ ) {
+
+						const x = i % width, y = ~ ~ ( i / width );
+						data[ i ] += Math.abs( perlin.noise( x / quality, y / quality, z ) * quality * 1.75 );
+
+					}
+
+					quality *= 5;
+
+				}
+
+				return data;
+
+			}
+
+			function generateTexture( data, width, height ) {
+
+				let context, image, imageData, shade;
+
+				const vector3 = new THREE.Vector3( 0, 0, 0 );
+
+				const sun = new THREE.Vector3( 1, 1, 1 );
+				sun.normalize();
+
+				const canvas = document.createElement( 'canvas' );
+				canvas.width = width;
+				canvas.height = height;
+
+				context = canvas.getContext( '2d' );
+				context.fillStyle = '#000';
+				context.fillRect( 0, 0, width, height );
+
+				image = context.getImageData( 0, 0, canvas.width, canvas.height );
+				imageData = image.data;
+
+				for ( let i = 0, j = 0, l = imageData.length; i < l; i += 4, j ++ ) {
+
+					vector3.x = data[ j - 2 ] - data[ j + 2 ];
+					vector3.y = 2;
+					vector3.z = data[ j - width * 2 ] - data[ j + width * 2 ];
+					vector3.normalize();
+
+					shade = vector3.dot( sun );
+
+					imageData[ i ] = ( 96 + shade * 128 ) * ( 0.5 + data[ j ] * 0.007 );
+					imageData[ i + 1 ] = ( 32 + shade * 96 ) * ( 0.5 + data[ j ] * 0.007 );
+					imageData[ i + 2 ] = ( shade * 96 ) * ( 0.5 + data[ j ] * 0.007 );
+
+				}
+
+				context.putImageData( image, 0, 0 );
+
+				// Scaled 4x
+
+				const canvasScaled = document.createElement( 'canvas' );
+				canvasScaled.width = width * 4;
+				canvasScaled.height = height * 4;
+
+				context = canvasScaled.getContext( '2d' );
+				context.scale( 4, 4 );
+				context.drawImage( canvas, 0, 0 );
+
+				image = context.getImageData( 0, 0, canvasScaled.width, canvasScaled.height );
+				imageData = image.data;
+
+				for ( let i = 0, l = imageData.length; i < l; i += 4 ) {
+
+					const v = ~ ~ ( Math.random() * 5 );
+
+					imageData[ i ] += v;
+					imageData[ i + 1 ] += v;
+					imageData[ i + 2 ] += v;
+
+				}
+
+				context.putImageData( image, 0, 0 );
+
+				return canvasScaled;
+
+			}
+
+			// Extract flight physics update to a separate function so we can call it during initialization
+			function updateFlightPhysics(deltaTime) {
+				// Skip physics update if crashed
+				if (settings.crashed) {
+					return {
+						verticalSpeed: 0,
+						speedRatio: 0,
+						liftFactor: 0,
+						oldPitch: settings.flightData.pitch,
+						oldBank: settings.flightData.bank,
+						oldAltitude: settings.flightData.altitude,
+						oldGravity: settings.gravity.current,
+						formattedTime: new Date().toISOString().substr(11, 8)
+					};
+				}
+				
+				// Update flight data indicators
+				// Get the camera's rotation in Euler angles
+				const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+				
+				// Calculate pitch (x-rotation) in degrees
+				// Convert from radians to degrees and adjust range to -90 to +90
+				const oldPitch = settings.flightData.pitch;
+				
+				// FIX: Invert the pitch calculation so negative is looking down, positive is looking up
+				// Previously: settings.flightData.pitch = -THREE.MathUtils.radToDeg(euler.x);
+				settings.flightData.pitch = THREE.MathUtils.radToDeg(euler.x);
+				
+				// Use the tracked bank angle from mouse movement
+				const oldBank = settings.flightData.bank;
+				settings.flightData.bank = settings.bankTracking.angle;
+				
+				// Ensure no NaN values
+				if (isNaN(settings.flightData.pitch)) settings.flightData.pitch = 0;
+				if (isNaN(settings.flightData.bank)) settings.flightData.bank = 0;
+				
+				// Save previous altitude for vertical speed calculation
+				const previousAltitude = camera.position.y;
+				// Save previous speed for logging
+				const previousSpeed = settings.currentSpeed;
+				
+				// ===== REVISED PHYSICS MODEL FOR REALISTIC WINGSUIT BEHAVIOR =====
+				
+				// --- 1. Calculate the base vertical movement based on pitch ---
+				// This is the most important factor - in a wingsuit, pitch directly controls vertical movement
+				
+				// Pitch to vertical speed mapping:
+				// -90° (straight down): fastest descent
+				// -20° to -40°: optimal glide ratio (balance of forward speed and manageable descent)
+				// -10° to 10°: moderate descent/ascent
+				// > 10°: stall (rapid descent despite looking up)
+				
+				let verticalSpeed = 0;
+				
+				// A) Steep dive (below -40°) - rapid descent
+				if (settings.flightData.pitch < -40) {
+					// Calculate steepness factor with exponential increase between -45° and -90°
+					let steepnessFactor;
+					if (settings.flightData.pitch < -45) {
+						// Exponential increase in descent rate between -45° and -90°
+						const normalizedPitch = (Math.abs(settings.flightData.pitch) - 45) / 45; // 0 to 1
+						steepnessFactor = Math.exp(normalizedPitch * 1.5) - 1; // Exponential growth
+					} else {
+						// Linear increase from -40° to -45°
+						steepnessFactor = Math.pow((-settings.flightData.pitch - 40) / 50, 1.5);
+					}
+					
+					// Calculate vertical speed with exponential component
+					verticalSpeed = -15 - (35 * steepnessFactor); // Increased multiplier for steeper dives
+					
+					// Increase forward speed based on dive angle
+					if (settings.flightData.pitch < -45) {
+						const speedBoost = Math.pow((-settings.flightData.pitch - 45) / 45, 2) * 200; // Exponential speed increase
+						settings.currentSpeed = Math.min(
+							settings.maxSpeed,
+							settings.currentSpeed + speedBoost * deltaTime
+						);
+					}
+					
+					// Ensure we don't exceed reasonable terminal velocity
+					verticalSpeed = Math.max(verticalSpeed, -60); // Increased from -40 to -60 for steeper dives
+				}
+				// B) Normal flight envelope (-40° to 10°)
+				else if (settings.flightData.pitch >= -40 && settings.flightData.pitch <= 10) {
+					// Linear relationship - more negative pitch = faster descent
+					// -40° = ~15 m/s descent
+					// 0° = ~5 m/s descent
+					// 10° = ~0 m/s (level flight)
+					verticalSpeed = 15 * (settings.flightData.pitch + 40) / 50 - 15;
+				}
+				// C) Stall region (above 10°) - increasing descent despite looking up
+				else if (settings.flightData.pitch > 10) {
+					// FIXED STALL PHYSICS: Higher angle = deeper stall = faster descent
+					// Scale stall from 0 m/s descent at 10° to 25 m/s descent at 90°
+					const stallSeverity = (settings.flightData.pitch - 10) / 80;
+					const baseStallDescent = 25 * stallSeverity;
+					
+					// Add randomized buffeting effect for realistic stall behavior
+					const stallBuffeting = Math.sin(performance.now() / 100) * 2 * stallSeverity;
+					
+					// Make stall worse at higher angles
+					verticalSpeed = -baseStallDescent - stallBuffeting;
+					
+					// Log stall condition
+					if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+						console.log(`⚠️ STALL CONDITION: Pitch ${settings.flightData.pitch.toFixed(1)}° → Descent rate ${Math.abs(verticalSpeed).toFixed(1)} m/s with buffeting`);
+					}
+				}
+				
+				// Log the raw vertical speed calculation based on pitch before modifiers
+				if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+					console.log(`🧮 Raw vertical speed from pitch (${settings.flightData.pitch.toFixed(1)}°): ${verticalSpeed.toFixed(2)} m/s`);
+				}
+				
+				// --- 2. Apply speed effects ---
+				// Higher speed provides more lift, reducing descent rate
+				// Lower speed increases gravity effect
+				const speedFactor = settings.currentSpeed / settings.baseSpeed;
+				const speedRatio = settings.currentSpeed / settings.minSpeed;
+				const verticalSpeedBeforeSpeedFactor = verticalSpeed;
+				
+				// Calculate additional gravity effect at low speeds - ENHANCED STALL BEHAVIOR
+				let gravityMultiplier = 1.0;
+				if (speedRatio < settings.gravity.minSpeedRatio) {
+					// More aggressive exponential increase in gravity as speed drops
+					const speedDeficit = settings.gravity.minSpeedRatio - speedRatio;
+					
+					// Additional multiplier when very close to minimum speed
+					if (settings.currentSpeed < settings.minSpeed * 1.2) { // Within 20% of min speed
+						const criticalSpeedFactor = (settings.currentSpeed - settings.minSpeed) / (settings.minSpeed * 0.2);
+						gravityMultiplier *= (2.0 - criticalSpeedFactor); // Up to 2x more gravity near minimum speed
+					}
+					
+					if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+						console.log(`⚠️ Low speed gravity effect: ${gravityMultiplier.toFixed(2)}x (Speed: ${settings.currentSpeed.toFixed(1)} m/s)`);
+						if (settings.currentSpeed < settings.minSpeed * 1.2) {
+							console.log(`🔴 CRITICAL SPEED WARNING: Approaching minimum speed!`);
+						}
+					}
+				}
+				
+				// Apply gravity multiplier to vertical speed
+				verticalSpeed *= gravityMultiplier;
+				
+				// REVISED: More realistic speed-lift relationship
+				// Higher speeds only provide lift if pitch is in a specific range
+				// Diving at high speed should not reduce descent rate
+				let liftMultiplier = 0;
+				
+				// Maximum lift is achieved in the proper glide envelope (-30° to 0°)
+				if (settings.flightData.pitch >= -30 && settings.flightData.pitch <= 0) {
+					// Optimal lift in this range
+					liftMultiplier = 1.0 - (Math.abs(settings.flightData.pitch + 15) / 15);
+					// This gives maximum lift around -15° (optimal glide angle)
+				} 
+				// Reduced lift in shallow climb (0° to 10°)
+				else if (settings.flightData.pitch > 0 && settings.flightData.pitch <= 10) {
+					liftMultiplier = 0.8 * (1.0 - (settings.flightData.pitch / 10));
+					// Reduces as pitch increases
+				}
+				// Minimal lift in steep dive (below -30°)
+				else if (settings.flightData.pitch < -30) {
+					liftMultiplier = 0.3 * (1.0 - Math.min(1, Math.abs(settings.flightData.pitch + 30) / 60));
+					// Quickly approaches zero as dive steepens
+				}
+				// No lift in stall (above 10°)
+				else {
+					liftMultiplier = 0;
+				}
+				
+				// Apply speed effect with lift multiplier
+				const liftEffect = Math.max(0, (speedFactor - 0.8) * 2) * liftMultiplier;
+				
+				// FIXED: Prevent lift from changing descent to climb
+				// If we're descending, lift can reduce descent rate but not reverse it to climbing
+				// If we're climbing, lift can enhance climb rate
+				if (verticalSpeed < 0) {
+					// Descending - lift can reduce descent rate but not create climb
+					// Maximum reduction is 90% of descent rate
+					const maxReduction = 0.9 * Math.abs(verticalSpeed);
+					const actualReduction = Math.min(maxReduction, liftEffect * settings.gravity.liftFactor * Math.abs(verticalSpeed));
+					verticalSpeed += actualReduction;
+				} else {
+					// Already climbing - lift can enhance climb, but cap at reasonable values
+					// Maximum climb enhancement from lift is 5 m/s
+					const maxEnhancement = 5.0;
+					const actualEnhancement = Math.min(maxEnhancement, liftEffect * settings.gravity.liftFactor * 10);
+					verticalSpeed += actualEnhancement;
+				}
+				
+				// Log the effect of speed on vertical speed
+				if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+					console.log(`🔄 Vertical speed after lift: ${verticalSpeedBeforeSpeedFactor.toFixed(2)} → ${verticalSpeed.toFixed(2)} m/s`);
+					console.log(`🛫 Lift details: Speed factor ${speedFactor.toFixed(2)}, Pitch optimal ratio ${liftMultiplier.toFixed(2)}, Final lift effect ${liftEffect.toFixed(2)}`);
+				}
+				
+				// --- 3. Apply acceleration effect ---
+				// When actively accelerating (diving for speed), increase descent rate
+				// REVISED: Acceleration should not directly reduce descent but rather increase it
+				const verticalSpeedBeforeAcceleration = verticalSpeed;
+				if (settings.accelerating) {
+					// FIXED: Acceleration always increases descent rate or reduces climb rate
+					if (verticalSpeed < 0) {
+						// Already descending - increase descent by 30%
+						verticalSpeed *= 1.3; 
+					} else {
+						// Currently climbing - reduce climb rate by 50%
+						verticalSpeed *= 0.5;
+						
+						// If pitch is very high (> 30°), acceleration causes stall
+						if (settings.flightData.pitch > 30) {
+							// Force a stall when accelerating at extreme pitch up
+							verticalSpeed = -5 - (settings.flightData.pitch - 30) / 10;
+							
+							if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+								console.log(`⚠️ ACCELERATION STALL: High pitch (${settings.flightData.pitch.toFixed(1)}°) + Acceleration = Forced stall`);
+							}
+						}
+					}
+					
+					if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+						console.log(`🚀 Acceleration effect on vertical speed: ${verticalSpeedBeforeAcceleration.toFixed(2)} → ${verticalSpeed.toFixed(2)} m/s`);
+					}
+				}
+				
+				// FINAL SAFETY CHECK: Ensure steep dive angles ALWAYS result in descent
+				if (settings.flightData.pitch < -45 && verticalSpeed >= 0) {
+					// Force descent for steep dives regardless of other factors
+					verticalSpeed = -20 - Math.abs(settings.flightData.pitch) / 4;
+					
+					if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+						console.log(`⚠️ PHYSICS CORRECTION: Forcing descent at steep dive angle (${settings.flightData.pitch.toFixed(1)}°)`);
+					}
+				}
+				
+				// --- 4. Apply bank angle effects ---
+				// Banking reduces lift and increases descent rate
+				const bankRadians = Math.abs(settings.flightData.bank) * Math.PI / 180;
+				const bankEffect = 1 + Math.sin(bankRadians) * 0.3; // Up to 30% faster descent in steep bank
+				const verticalSpeedBeforeBank = verticalSpeed;
+				verticalSpeed *= bankEffect;
+				
+				if (settings.logging.enabled && Math.abs(settings.flightData.bank) > 5 && 
+				   (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+					console.log(`🛩️ Bank effect (${settings.flightData.bank.toFixed(1)}°) on vertical speed: ${verticalSpeedBeforeBank.toFixed(2)} → ${verticalSpeed.toFixed(2)} m/s (${((bankEffect-1)*100).toFixed(1)}% increase)`);
+				}
+				
+				// Apply banking by changing camera's up vector
+				// Calculate forward direction
+				const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+				
+				// Calculate right direction (perpendicular to forward and world up)
+				const right = new THREE.Vector3().crossVectors(camera.originalUp, forward).normalize();
+				
+				// Apply banking by tilting the up vector
+				camera.bankedUp.copy(camera.originalUp); // Start with normal up
+				
+				// Smoothly interpolate between current visual bank angle and target bank angle
+				const targetBankAngle = settings.flightData.bank;
+				
+				// Calculate delta between current and target bank
+				const bankDelta = targetBankAngle - settings.bankTracking.currentVisualBank;
+				
+				// ENHANCED ADAPTIVE EASING ALGORITHM
+				// Base easing factor from settings
+				const baseEasingFactor = Math.min(1.0, settings.bankTracking.bankEaseSpeed * deltaTime);
+				
+				// Direction change detection - apply faster correction when changing direction
+				const isDirectionChange = (settings.bankTracking.currentVisualBank * targetBankAngle < 0);
+				const directionChangeBoost = isDirectionChange ? 2.0 : 1.0;
+				
+				// Non-linear scaling based on delta magnitude - larger difference = faster correction
+				// Square root provides more aggressive scaling for large deltas while staying moderate for small ones
+				const deltaMagnitudeScale = Math.min(1.0, Math.sqrt(Math.abs(bankDelta) / 15.0));
+				
+				// Combine factors with progressive weighting
+				let adaptiveEasingFactor = baseEasingFactor * (1.0 + deltaMagnitudeScale * 1.5) * directionChangeBoost;
+				
+				// Ensure minimum response rate for significant banking changes
+				const minEasingThreshold = Math.abs(bankDelta) > 10 ? 0.08 : 0.03;
+				adaptiveEasingFactor = Math.max(minEasingThreshold, adaptiveEasingFactor);
+				
+				// Ensure we never exceed a factor of 1.0 (which would cause overshooting)
+				const clampedFactor = Math.min(0.9, adaptiveEasingFactor);
+				
+				// Apply the easing
+				settings.bankTracking.currentVisualBank += bankDelta * clampedFactor;
+				
+				// Calculate bank angle in radians using the smoothed visual bank
+				const bankAngleRad = settings.bankTracking.currentVisualBank * Math.PI / 180;
+				
+				// Log detailed banking data when significant changes occur
+				if (settings.logging.enabled && Math.abs(settings.flightData.bank) > 5 && 
+					performance.now() - settings.logging.lastBankLogTime > 500) {
+					settings.logging.lastBankLogTime = performance.now();
+					console.group('🛩️ Banking Details');
+					// Positive bank = right bank in aviation
+					console.log(`🔄 Target bank angle: ${settings.flightData.bank.toFixed(1)}° (${settings.flightData.bank > 0 ? 'Right' : 'Left'} bank)`);
+					console.log(`🔄 Visual bank angle: ${settings.bankTracking.currentVisualBank.toFixed(1)}° (Smoothed)`);
+					console.log(`🔀 Bank Delta: ${bankDelta.toFixed(2)}° | Easing Factor: ${clampedFactor.toFixed(3)}`);
+					
+					// Add enhanced logging to debug the easing algorithm
+					console.log(`🧮 Easing calculation:
+  - Base factor: ${baseEasingFactor.toFixed(3)}
+  - Direction change: ${isDirectionChange ? 'YES (2x boost)' : 'NO'}
+  - Delta magnitude scale: ${deltaMagnitudeScale.toFixed(3)}
+  - Minimum threshold: ${minEasingThreshold.toFixed(3)}
+  - Final factor: ${clampedFactor.toFixed(3)}`);
+					
+					console.log(`📐 Bank angle in radians: ${bankAngleRad.toFixed(3)}`);
+					console.log(`🧮 Effect on descent rate: +${((bankEffect - 1) * 100).toFixed(1)}%`);
+					console.log(`👁️ Camera up vector before banking: [${camera.originalUp.x.toFixed(2)}, ${camera.originalUp.y.toFixed(2)}, ${camera.originalUp.z.toFixed(2)}]`);
+					console.groupEnd();
+				}
+				
+				// Apply bank by adding a component of the right vector
+				camera.bankedUp.addScaledVector(right, Math.sin(bankAngleRad));
+				camera.bankedUp.normalize();
+				
+				// Log the final camera up vector after banking is applied
+				if (settings.logging.enabled && Math.abs(settings.bankTracking.currentVisualBank) > 10 && 
+					performance.now() - settings.logging.lastBankVectorLogTime > 1000) {
+					settings.logging.lastBankVectorLogTime = performance.now();
+					
+					// Calculate the bank direction for clearer logging
+					// Following aviation convention: positive bank = right bank
+					const bankDirection = settings.bankTracking.currentVisualBank > 0 ? 'RIGHT' : 'LEFT';
+					const rightWingPosition = settings.bankTracking.currentVisualBank > 0 ? 'DOWN' : 'UP';
+					const leftWingPosition = settings.bankTracking.currentVisualBank > 0 ? 'UP' : 'DOWN';
+					
+					console.group(`🛫 Banking ${Math.abs(settings.bankTracking.currentVisualBank).toFixed(1)}° to ${bankDirection}`);
+					console.log(`👈 Left wing: ${leftWingPosition}`);
+					console.log(`👉 Right wing: ${rightWingPosition}`);
+					console.log(`🧭 Final camera up vector: [${camera.bankedUp.x.toFixed(2)}, ${camera.bankedUp.y.toFixed(2)}, ${camera.bankedUp.z.toFixed(2)}]`);
+					console.groupEnd();
+				}
+				
+				// Apply the banked up vector to the camera
+				camera.up.copy(camera.bankedUp);
+				
+				// Move vertically based on calculated vertical speed
+				if (!isNaN(verticalSpeed) && isFinite(verticalSpeed)) {
+					camera.position.y -= verticalSpeed * deltaTime;
+					
+					// Add immediate collision check after vertical movement
+					if (checkTerrainCollision()) {
+						return; // Exit early if collision detected
+					}
+				}
+				
+				// Calculate vertical speed for display (negative is down)
+				settings.flightData.verticalSpeed = Math.round((previousAltitude - camera.position.y) / deltaTime * 10) / 10;
+				if (isNaN(settings.flightData.verticalSpeed)) settings.flightData.verticalSpeed = 0;
+				
+				// Log actual vertical movement vs calculated
+				if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+					console.log(`📊 Vertical movement: Calculated ${verticalSpeed.toFixed(2)} m/s vs Actual ${settings.flightData.verticalSpeed.toFixed(2)} m/s`);
+				}
+				
+				// Custom forward movement implementation
+				// Get current direction that camera is facing
+				const lookDirection = new THREE.Vector3(0, 0, -1);
+				lookDirection.applyQuaternion(camera.quaternion);
+				
+				// Include some of the pitch in the movement direction 
+				// Steep dive = more downward component
+				const pitchInfluence = 0.3; // How much pitch affects forward direction
+				lookDirection.y = Math.sin(euler.x) * pitchInfluence; // Add vertical component based on pitch
+				lookDirection.normalize();
+				
+				// Bank effect - slight sideways movement when banking
+				const rightVector = new THREE.Vector3(1, 0, 0);
+				rightVector.applyQuaternion(camera.quaternion);
+				// Add lateral movement based on bank angle
+				const bankInfluence = Math.sin(bankRadians) * Math.sign(settings.flightData.bank) * 0.1;
+				lookDirection.addScaledVector(rightVector, bankInfluence);
+				lookDirection.normalize();
+				
+				// Move forward in the direction the camera is facing at current speed
+				const moveDistance = settings.currentSpeed * deltaTime;
+				camera.position.addScaledVector(lookDirection, moveDistance);
+				
+				// Enforce movement boundaries to prevent seeing edges
+				if (settings.enableBoundaries) {
+					if (camera.position.x > settings.boundarySize) camera.position.x = settings.boundarySize;
+					if (camera.position.x < -settings.boundarySize) camera.position.x = -settings.boundarySize;
+					if (camera.position.z > settings.boundarySize) camera.position.z = settings.boundarySize;
+					if (camera.position.z < -settings.boundarySize) camera.position.z = -settings.boundarySize;
+					
+					// Check for terrain collision first, then enforce minimum height
+					const collided = checkTerrainCollision();
+					
+					// Only enforce height boundaries if not collided with terrain
+					if (!collided) {
+						// Enforce minimum height
+						if (camera.position.y < settings.minHeight) {
+							if (settings.logging.enabled && Math.abs(camera.position.y - settings.minHeight) > 5) {
+								console.log(`🛑 Hit minimum height boundary: ${camera.position.y.toFixed(1)} → ${settings.minHeight}`);
+							}
+							camera.position.y = settings.minHeight;
+						}
+						// Enforce maximum height
+						if (camera.position.y > settings.maxHeight) {
+							if (settings.logging.enabled && Math.abs(camera.position.y - settings.maxHeight) > 5) {
+								console.log(`🛑 Hit maximum height boundary: ${camera.position.y.toFixed(1)} → ${settings.maxHeight}`);
+							}
+							camera.position.y = settings.maxHeight;
+						}
+					}
+				} else {
+					// Always check for terrain collision, even when boundaries are disabled
+					checkTerrainCollision();
+				}
+				
+				// Calculate effective gravity for display/debug - not used in physics calculations anymore
+				gravityMultiplier = settings.accelerating ? 
+					settings.gravity.multiplierWhenAccelerating : 
+					settings.gravity.multiplierWhenGliding;
+					
+				const pitchEffect = -settings.flightData.pitch * settings.gravity.pitchFactor;
+				settings.gravity.current = settings.gravity.baseValue * (gravityMultiplier + pitchEffect);
+				
+				// Ensure gravity never goes below 0 for display purposes
+				settings.gravity.current = Math.max(0, settings.gravity.current);
+				
+				// Calculate lift factor for display purposes
+				const liftFactor = Math.max(0, 1 - (speedRatio * settings.gravity.liftFactor));
+				
+				// Update altitude
+				const oldAltitude = settings.flightData.altitude;
+				settings.flightData.altitude = Math.floor(camera.position.y);
+				
+				// Add timestamp to logging
+				const formattedTime = new Date().toISOString().substr(11, 8);
+				
+				return {
+					verticalSpeed,
+					speedRatio,
+					liftFactor,
+					oldPitch,
+					oldBank,
+					oldAltitude,
+					oldGravity: settings.gravity.current,
+					formattedTime
+				};
+			}
+
+			function animate() {
+				render();
+				stats.update();
+			}
+
+			function render() {
+				const deltaTime = clock.getDelta();
+				
+				// Skip most updates if crashed
+				if (!settings.crashed) {
+					// Update wind particles
+					updateWindParticles(deltaTime);
+					
+					// Update clouds
+					updateClouds(deltaTime);
+
+					// Calculate wind effect on player
+					if (windSettings.enabled) {
+						const lookDirection = new THREE.Vector3(0, 0, -1);
+						lookDirection.applyQuaternion(camera.quaternion);
+						
+						// Calculate dot product between look direction and wind direction
+						// 1 = wind from behind (speed up), -1 = headwind (slow down)
+						const windAlignment = lookDirection.dot(windSettings.direction);
+						
+						// Calculate crosswind component using cross product
+						const crosswind = new THREE.Vector3();
+						crosswind.crossVectors(lookDirection, windSettings.direction);
+						const crosswindStrength = crosswind.length() * Math.sign(crosswind.y);
+						
+						// Calculate wind effect on bank angle
+						// Stronger crosswind = more banking force
+						// Reduced from 0.1 to 0.05 (50% reduction)
+						const bankEffect = crosswindStrength * windSettings.speed * 0.025;
+						settings.bankTracking.angle += bankEffect;
+						
+						// Calculate wind effect on pitch
+						// Headwind tends to pitch up, tailwind tends to pitch down
+						// Reduced from 0.05 to 0.025 (50% reduction)
+						const pitchEffect = -windAlignment * windSettings.speed * 0.0125;
+						controls.verticalMin = Math.PI / 2.5 + pitchEffect;
+						controls.verticalMax = Math.PI / 1.5 + pitchEffect;
+						
+						// Scale wind effect based on current speed to prevent bouncing
+						const speedRatio = settings.currentSpeed / settings.baseSpeed;
+						const windEffect = windAlignment * windSettings.speed * deltaTime * speedRatio;
+						
+						// Apply wind effect to horizontal speed only
+						if (!settings.crashed) {
+							settings.currentSpeed = THREE.MathUtils.clamp(
+								settings.currentSpeed + windEffect,
+								settings.minSpeed,
+								settings.maxSpeed
+							);
+
+							// Enhanced wind effect logging
+							if (settings.logging.enabled && (Math.abs(windEffect) > 1 || Math.abs(bankEffect) > 0.5) &&
+								(performance.now() - settings.logging.lastSpeedChangeLogTime > 1000)) {
+								settings.logging.lastSpeedChangeLogTime = performance.now();
+								console.group('🌬️ Wind Effects');
+								console.log(`Wind Direction: ${windAlignment > 0 ? 'Tailwind' : 'Headwind'} (${Math.abs(windEffect).toFixed(1)} m/s)`);
+								console.log(`Crosswind Effect: ${bankEffect > 0 ? 'Right Roll' : 'Left Roll'} (${Math.abs(bankEffect).toFixed(1)}°)`);
+								console.log(`Pitch Effect: ${pitchEffect > 0 ? 'Nose Up' : 'Nose Down'} (${Math.abs(pitchEffect).toFixed(1)}°)`);
+								console.groupEnd();
+							}
+						}
+					}
+					
+					// Update flight physics
+					const physicsData = updateFlightPhysics(deltaTime);
+					
+					// Update player model position and rotation
+					playerModel.position.copy(camera.position);
+					playerModel.position.add(settings.playerModel.offset.clone().applyQuaternion(camera.quaternion));
+
+					// First copy camera quaternion for base orientation
+					playerModel.quaternion.copy(camera.quaternion);
+
+					// Add pitch tilt to the model
+					const pitchAngle = THREE.MathUtils.degToRad(settings.flightData.pitch * 0.075); // 7.5% of actual pitch
+					playerModel.rotateX(pitchAngle);
+
+					// Add bank rotation that scales with mouse position
+					const bankAngle = THREE.MathUtils.degToRad(settings.bankTracking.currentVisualBank * 0.2); // 20% of bank angle
+					const mouseXFromCenter = settings.bankTracking.lastMouseX / window.innerWidth - 0.5; // -0.5 to 0.5
+					const bankMultiplier = Math.abs(mouseXFromCenter) * 1.25; // Scale factor based on mouse distance from center
+					playerModel.rotateZ(-bankAngle * (1 + bankMultiplier)); // Invert for correct banking direction
+
+					// Add any additional model rotations
+					playerModel.rotation.y += settings.playerModel.rotation.y;
+
+					playerModel.scale.copy(settings.playerModel.scale);
+					
+					// Update controls
+					controls.update(deltaTime);
+				}
+				
+				// Handle third person camera
+				if (isThirdPerson) {
+					const originalPos = camera.position.clone();
+					const originalQuat = camera.quaternion.clone();
+					
+					if (!settings.crashed) {
+						// Calculate offset based on camera's orientation
+						const offset = thirdPersonOffset.clone().applyQuaternion(camera.quaternion);
+						camera.position.add(offset);
+					} else {
+						// Use fixed crash position with offset
+						camera.position.copy(settings.crashPosition);
+						camera.position.y += thirdPersonOffset.y * 2;
+						camera.position.z += thirdPersonOffset.z;
+					}
+					
+					// Look at player model
+					camera.lookAt(playerModel.position);
+					
+					// Render the scene
+					renderer.render(scene, camera);
+					
+					// Restore original camera position and orientation
+					camera.position.copy(originalPos);
+					camera.quaternion.copy(originalQuat);
+				} else {
+					renderer.render(scene, camera);
+				}
+				
+				stats.update();
+
+				// Add ring update function to render()
+				updateRings(deltaTime);
+			}
+
+			// Function to check if position is below terrain height
+			function checkTerrainCollision() {
+				// Get actual player position (not camera position in third person)
+				const posX = isThirdPerson ? playerModel.position.x : camera.position.x;
+				const posZ = isThirdPerson ? playerModel.position.z : camera.position.z;
+				const posY = isThirdPerson ? playerModel.position.y : camera.position.y;
+				
+				// Convert world position to terrain data coordinates
+				const halfSize = settings.terrain.worldSize / 2;
+				
+				// Calculate normalized coordinates (0 to 1)
+				const normalizedX = (posX + halfSize) / settings.terrain.worldSize;
+				const normalizedZ = (posZ + halfSize) / settings.terrain.worldSize;
+				
+				// Convert to grid coordinates
+				const gridX = Math.floor(normalizedX * (worldWidth - 1));
+				const gridZ = Math.floor(normalizedZ * (worldDepth - 1));
+				
+				// Ensure coordinates are within bounds
+				if (gridX >= 0 && gridX < worldWidth && gridZ >= 0 && gridZ < worldDepth) {
+					const dataIndex = gridZ * worldWidth + gridX;
+					const terrainHeight = settings.terrain.data[dataIndex] * settings.terrain.scale;
+					
+					const collisionBuffer = 5;
+					if (posY <= terrainHeight + collisionBuffer) {
+						if (!settings.crashed) {
+							console.log(`💥 COLLISION DETECTED: Player (${posY.toFixed(1)}m) hit terrain (${terrainHeight.toFixed(1)}m)`);
+							
+							// Store crash position
+							settings.crashPosition = new THREE.Vector3(posX, terrainHeight + collisionBuffer, posZ);
+							
+							// Force immediate position update to prevent clipping
+							camera.position.copy(settings.crashPosition);
+							if (playerModel) playerModel.position.copy(settings.crashPosition);
+							
+							playerCrashed();
+							return true;
+						}
+						return true;
+					}
+				}
+				
+				return false;
+			}
+			
+			// Handle player crash
+			function playerCrashed() {
+				settings.crashed = true;
+				
+				// Play crash sound if available
+				// (Sound implementation could be added here)
+				
+				// Show crash dialog
+				const crashDialog = document.getElementById('crash-dialog');
+				if (crashDialog) {
+					crashDialog.style.display = 'block';
+					crashDialog.style.visibility = 'visible';
+					console.log('Crash dialog shown');
+				} else {
+					console.error('Crash dialog not found');
+				}
+				
+				// Log crash details
+				if (settings.logging.enabled) {
+					console.group('💥 CRASH INFORMATION');
+					console.log(`📍 Position: [${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}]`);
+					console.log(`🔄 Rotation: Pitch ${settings.flightData.pitch.toFixed(1)}°, Bank ${settings.flightData.bank.toFixed(1)}°`);
+					console.log(`💨 Speed at impact: ${settings.currentSpeed.toFixed(1)}`);
+					console.log(`📉 Vertical speed: ${settings.flightData.verticalSpeed.toFixed(1)} m/s`);
+					console.groupEnd();
+				}
+				
+				// Disable controls
+				controls.enabled = false;
+			}
+			
+			// Restart the game
+			function restartGame() {
+				console.log('Restarting game...');
+				
+				// Reset crash state
+				settings.crashed = false;
+				
+				// Hide crash dialog with explicit styles
+				const crashDialog = document.getElementById('crash-dialog');
+				if (crashDialog) {
+					crashDialog.style.display = 'none';
+					crashDialog.style.visibility = 'hidden';
+					console.log('Crash dialog hidden');
+				} else {
+					console.error('Crash dialog not found');
+				}
+				
+				// Store original starting values in settings if not already defined
+				if (!settings.startPosition) {
+					settings.startPosition = new THREE.Vector3(100, 800, -800);
+					settings.startLookAt = new THREE.Vector3(-100, 810, -800);
+				}
+				
+				// Reset player position and orientation to exact starting position
+				camera.position.copy(settings.startPosition);
+				camera.lookAt(settings.startLookAt);
+				
+				// Reset player model position
+				playerModel.position.copy(settings.startPosition);
+				playerModel.lookAt(settings.startLookAt);
+				
+				// Reset flight data
+				settings.flightData.pitch = 0;
+				settings.flightData.bank = 0;
+				settings.bankTracking.angle = 0;
+				settings.bankTracking.currentVisualBank = 0;
+				settings.flightData.verticalSpeed = 0;
+				
+				// Reset camera orientation
+				camera.up.copy(camera.originalUp);
+				camera.quaternion.setFromEuler(new THREE.Euler(0, 0, 0));
+				
+				// Reset speed
+				settings.currentSpeed = settings.baseSpeed;
+				settings.accelerating = false;
+				
+				// Re-enable controls
+				controls.enabled = true;
+				
+				// Reset player model visibility based on view mode
+				playerModel.visible = isThirdPerson;
+				
+				if (settings.logging.enabled) {
+					console.log('🔄 Game restarted at exact initial position:', settings.startPosition);
+				}
+			}
+
+			function initWindParticles() {
+				// Create a particle geometry - make particles longer and thinner
+				const particleGeometry = new THREE.ConeGeometry(0.2, windSettings.particleLength * 2, 3);
+				particleGeometry.rotateX(Math.PI / 2); // Rotate to point forward
+
+				// Create a material for the particles with trail effect
+				const particleMaterial = new THREE.MeshBasicMaterial({
+					color: 0xFFFFFF,
+					transparent: true,
+					opacity: windSettings.particleOpacity,
+					side: THREE.DoubleSide
+				});
+
+				// Create particles with better initial distribution
+				for (let i = 0; i < windSettings.particleCount; i++) {
+					const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+					
+					// Distribute particles in a large cylinder volume
+					const radius = Math.random() * windSettings.boundarySize;
+					const angle = Math.random() * Math.PI * 2;
+					particle.position.set(
+						Math.cos(angle) * radius,
+						Math.random() * 1000 + 100,
+						Math.sin(angle) * radius
+					);
+					
+					// Store original position for resetting
+					particle.userData.originalPos = particle.position.clone();
+					particle.userData.speed = windSettings.speed * (0.8 + Math.random() * 0.4); // Individual particle speed
+					
+					scene.add(particle);
+					windParticles.push(particle);
+				}
+			}
+
+			function updateWindParticles(deltaTime) {
+				if (!windSettings.enabled) return;
+
+				const time = performance.now();
+				
+				// Update wind direction with smoother changes
+				const baseAngle = time * windSettings.dynamics.directionChangeSpeed;
+				const turbulenceAngle = Math.sin(time * 0.0005) * 0.3; // Reduced turbulence
+				const finalAngle = baseAngle + turbulenceAngle;
+				
+				// Update main wind direction
+				const targetDirection = new THREE.Vector3(
+					Math.cos(finalAngle),
+					Math.sin(time * 0.0001) * windSettings.dynamics.verticalVariation,
+					Math.sin(finalAngle)
+				).normalize();
+
+				// Smoothly interpolate current direction to target
+				windSettings.direction.lerp(targetDirection, 0.1);
+
+				// Update wind speed with smoother oscillation
+				const speedOscillation = Math.sin(time * windSettings.dynamics.speedChangeSpeed);
+				const speedRange = windSettings.dynamics.maxSpeed - windSettings.dynamics.minSpeed;
+				windSettings.speed = windSettings.dynamics.minSpeed + 
+					(speedRange * (0.5 + speedOscillation * 0.5));
+
+				// Update particles with improved movement
+				windParticles.forEach(particle => {
+					// Calculate particle movement direction
+					const particleDirection = windSettings.direction.clone();
+					
+					// Add subtle turbulence
+					const turbulence = new THREE.Vector3(
+						(Math.random() - 0.5) * 2 * windSettings.dynamics.turbulence,
+						(Math.random() - 0.5) * windSettings.dynamics.turbulence,
+						(Math.random() - 0.5) * 2 * windSettings.dynamics.turbulence
+					);
+					particleDirection.add(turbulence).normalize();
+
+					// Move particle with its individual speed
+					const moveSpeed = particle.userData.speed * deltaTime * windSettings.speed;
+					particle.position.addScaledVector(particleDirection, moveSpeed);
+
+					// Align particle to movement direction
+					particle.lookAt(particle.position.clone().add(particleDirection));
+
+					// Reset particle position when it goes too far
+					const distanceFromCenter = particle.position.length();
+					if (distanceFromCenter > windSettings.boundarySize * 1.5) {
+						// Reset to opposite side of the wind direction
+						const resetAngle = Math.atan2(-windSettings.direction.z, -windSettings.direction.x);
+						const resetRadius = windSettings.boundarySize;
+						
+						particle.position.set(
+							Math.cos(resetAngle) * resetRadius,
+							Math.random() * 1000 + 100,
+							Math.sin(resetAngle) * resetRadius
+						);
+						
+						// Add some random offset to prevent particles from forming a line
+						particle.position.add(new THREE.Vector3(
+							(Math.random() - 0.5) * 200,
+							0,
+							(Math.random() - 0.5) * 200
+						));
+						
+						// Update original position
+						particle.userData.originalPos = particle.position.clone();
+						// Randomize particle speed slightly
+						particle.userData.speed = windSettings.speed * (0.8 + Math.random() * 0.4);
+					}
+				});
+			}
+
+			// Add terrain analysis for wind effects
+			function analyzeTerrainForWind() {
+				if (!windSettings.enabled) return { effect: 0, type: 'none' };
+				
+				const posX = camera.position.x;
+				const posY = camera.position.y;
+				const posZ = camera.position.z;
+				const halfSize = settings.terrain.worldSize / 2;
+				
+				// Check in front of the player for ridges or valleys
+				const lookDirection = new THREE.Vector3(0, 0, -1);
+				lookDirection.applyQuaternion(camera.quaternion);
+				lookDirection.normalize();
+				
+				// Sample points ahead
+				const checkDistance = windSettings.dynamics.terrainCheckRadius;
+				const checkPoint = new THREE.Vector3();
+				checkPoint.copy(camera.position);
+				checkPoint.addScaledVector(lookDirection, checkDistance);
+				
+				// Convert to terrain coordinates
+				const normalizedX = (checkPoint.x + halfSize) / settings.terrain.worldSize;
+				const normalizedZ = (checkPoint.z + halfSize) / settings.terrain.worldSize;
+				
+				// Get grid coordinates
+				const gridX = Math.floor(normalizedX * (worldWidth - 1));
+				const gridZ = Math.floor(normalizedZ * (worldDepth - 1));
+				
+				// Check if coordinates are within bounds
+				if (gridX >= 0 && gridX < worldWidth && gridZ >= 0 && gridZ < worldDepth) {
+					const dataIndex = gridZ * worldWidth + gridX;
+					const terrainHeight = settings.terrain.data[dataIndex] * settings.terrain.scale;
+					
+					// Calculate height difference
+					const heightDifference = terrainHeight - posY;
+					
+					// Classify terrain feature
+					if (heightDifference > 20) {
+						// Ridge or mountain ahead
+						return { 
+							effect: Math.min(1, heightDifference / 100) * windSettings.dynamics.terrainInfluenceFactor, 
+							type: 'ridge', 
+							heightDifference 
+						};
+					} else if (heightDifference < -20) {
+						// Valley ahead
+						return { 
+							effect: Math.min(1, Math.abs(heightDifference) / 100) * windSettings.dynamics.terrainInfluenceFactor, 
+							type: 'valley', 
+							heightDifference 
+						};
+					}
+				}
+				
+				return { effect: 0, type: 'none', heightDifference: 0 };
+			}
+
+			// Add cloud initialization function
+			function initClouds() {
+				// Calculate number of clouds based on terrain size
+				const terrainArea = settings.terrain.worldSize * settings.terrain.worldSize;
+				const baseCloudCount = Math.floor(Math.sqrt(terrainArea) / 100);
+				cloudSettings.count = Math.min(
+					cloudLifecycle.maxClouds,
+					Math.max(cloudLifecycle.minClouds, baseCloudCount)
+				);
+
+				// Create cloud texture data with improved 3D noise
+				const size = 64;
+				const data = new Uint8Array(size * size * size);
+				const perlin = new ImprovedNoise();
+				const vector = new THREE.Vector3();
+
+				let i = 0;
+				for (let z = 0; z < size; z++) {
+					for (let y = 0; y < size; y++) {
+						for (let x = 0; x < size; x++) {
+							// Enhanced 3D noise for more volumetric appearance
+							const baseNoise = perlin.noise(
+								x * cloudSettings.noiseScale.base,
+								y * cloudSettings.noiseScale.vertical,
+								z * cloudSettings.noiseScale.base
+							);
+
+							const detailNoise = perlin.noise(
+								x * cloudSettings.noiseScale.detail,
+								y * cloudSettings.noiseScale.detail * 1.5,
+								z * cloudSettings.noiseScale.detail
+							) * 0.5;
+
+							// Shape function for more natural cloud formation
+							const d = 1.0 - vector.set(
+								x - size/2,
+								(y - size/2) * cloudSettings.verticalStretch,
+								z - size/2
+							).divideScalar(size/2).length();
+
+							// Combine noise layers with vertical gradient
+							const verticalGradient = Math.max(0, (y / size - 0.3) * 1.5);
+							data[i] = (128 + 128 * (baseNoise + detailNoise)) * 
+									 Math.pow(d, 1.5) * // Softer edges
+									 verticalGradient;  // Flat bottom
+							i++;
+						}
+					}
+				}
+
+				const texture = new THREE.Data3DTexture(data, size, size, size);
+				texture.format = THREE.RedFormat;
+				texture.minFilter = THREE.LinearFilter;
+				texture.magFilter = THREE.LinearFilter;
+				texture.unpackAlignment = 1;
+				texture.needsUpdate = true;
+
+				// Create initial clouds
+				for (let i = 0; i < cloudSettings.count; i++) {
+					createCloud(texture, true);
+				}
+			}
+
+			// Add cloud creation function
+			function createCloud(texture, isInitial = false) {
+				const geometry = new THREE.BoxGeometry(1, 1, 1);
+				const material = new THREE.RawShaderMaterial({
+					glslVersion: THREE.GLSL3,
+					uniforms: {
+						base: { value: new THREE.Color(0xffffff) },
+						map: { value: texture },
+						cameraPos: { value: new THREE.Vector3() },
+						threshold: { value: isInitial ? cloudSettings.threshold.default : 1.0 },
+						range: { value: cloudSettings.range.default },
+						opacity: { value: cloudSettings.opacity.default },
+						steps: { value: cloudSettings.steps.default },
+						frame: { value: 0 },
+						// Add fog uniforms
+						fogColor: { value: new THREE.Color(0xefd1b5) },
+						fogDensity: { value: settings.fogDensity },
+						enableFog: { value: settings.enableFog }
+					},
+					vertexShader: /* glsl */`
+						in vec3 position;
+						uniform mat4 modelMatrix;
+						uniform mat4 modelViewMatrix;
+						uniform mat4 projectionMatrix;
+						uniform vec3 cameraPos;
+						out vec3 vOrigin;
+						out vec3 vDirection;
+						out float vDistance;  // Add distance varying
+
+						void main() {
+							vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+							vOrigin = vec3(inverse(modelMatrix) * vec4(cameraPos, 1.0)).xyz;
+							vDirection = position - vOrigin;
+							
+							// Calculate distance to camera
+							vDistance = length(mvPosition.xyz);
+							
+							gl_Position = projectionMatrix * mvPosition;
+						}
+					`,
+					fragmentShader: /* glsl */`
+							precision highp float;
+							precision highp sampler3D;
+
+							uniform mat4 modelViewMatrix;
+							uniform mat4 projectionMatrix;
+
+							in vec3 vOrigin;
+							in vec3 vDirection;
+							in float vDistance;  // Add distance varying
+
+							out vec4 color;
+
+							uniform vec3 base;
+							uniform sampler3D map;
+							uniform float threshold;
+							uniform float range;
+							uniform float opacity;
+							uniform float steps;
+							uniform float frame;
+							
+							// Add fog uniforms
+							uniform vec3 fogColor;
+							uniform float fogDensity;
+							uniform bool enableFog;
+
+							uint wang_hash(uint seed) {
+								seed = (seed ^ 61u) ^ (seed >> 16u);
+								seed *= 9u;
+								seed = seed ^ (seed >> 4u);
+								seed *= 0x27d4eb2du;
+								seed = seed ^ (seed >> 15u);
+								return seed;
+							}
+
+							float randomFloat(inout uint seed) {
+								return float(wang_hash(seed)) / 4294967296.;
+							}
+
+							vec2 hitBox(vec3 orig, vec3 dir) {
+								const vec3 box_min = vec3(-0.5);
+								const vec3 box_max = vec3(0.5);
+								vec3 inv_dir = 1.0 / dir;
+								vec3 tmin_tmp = (box_min - orig) * inv_dir;
+								vec3 tmax_tmp = (box_max - orig) * inv_dir;
+								vec3 tmin = min(tmin_tmp, tmax_tmp);
+								vec3 tmax = max(tmin_tmp, tmax_tmp);
+								float t0 = max(tmin.x, max(tmin.y, tmin.z));
+								float t1 = min(tmax.x, min(tmax.y, tmax.z));
+								return vec2(t0, t1);
+							}
+
+							float sample1(vec3 p) {
+								return texture(map, p).r;
+							}
+
+							float shading(vec3 coord) {
+								float step = 0.01;
+								return sample1(coord + vec3(-step)) - sample1(coord + vec3(step));
+							}
+
+							vec4 linearToSRGB(in vec4 value) {
+								return vec4(
+									mix(
+										pow(value.rgb, vec3(0.41666)) * 1.055 - vec3(0.055),
+										value.rgb * 12.92,
+										vec3(lessThanEqual(value.rgb, vec3(0.0031308)))
+							),
+							value.a
+						);
+							}
+
+							void main() {
+								vec3 rayDir = normalize(vDirection);
+								vec2 bounds = hitBox(vOrigin, rayDir);
+
+								if (bounds.x > bounds.y) discard;
+
+								bounds.x = max(bounds.x, 0.0);
+
+								vec3 p = vOrigin + bounds.x * rayDir;
+								vec3 inc = 1.0 / abs(rayDir);
+								float delta = min(inc.x, min(inc.y, inc.z));
+								delta /= steps;
+
+								uint seed = uint(gl_FragCoord.x) * uint(1973) + uint(gl_FragCoord.y) * uint(9277) + uint(frame) * uint(26699);
+								vec3 size = vec3(textureSize(map, 0));
+								float randNum = randomFloat(seed) * 2.0 - 1.0;
+								p += rayDir * randNum * (1.0 / size);
+
+								vec4 ac = vec4(base, 0.0);
+
+								for (float t = bounds.x; t < bounds.y; t += delta) {
+									float d = sample1(p + 0.5);
+									d = smoothstep(threshold - range, threshold + range, d) * opacity;
+									float col = shading(p + 0.5) * 3.0 + ((p.x + p.y) * 0.25) + 0.2;
+									ac.rgb += (1.0 - ac.a) * d * col;
+									ac.a += (1.0 - ac.a) * d;
+									if (ac.a >= 0.95) break;
+									p += rayDir * delta;
+								}
+
+								// Apply fog effect
+								if (enableFog) {
+									// Calculate fog factor using exponential fog
+									float fogFactor = 1.0 - exp(-fogDensity * fogDensity * vDistance * vDistance);
+									
+									// Smoothly fade out clouds at distance
+									float distanceFade = 1.0 - smoothstep(2000.0, 8000.0, vDistance);
+									
+									// Combine fog and distance fade
+									ac.a *= (1.0 - fogFactor) * distanceFade;
+									
+									// Mix with fog color
+									ac.rgb = mix(ac.rgb, fogColor, fogFactor);
+								}
+
+								color = linearToSRGB(ac);
+								if (color.a == 0.0) discard;
+							}
+					`,
+					side: THREE.BackSide,
+						transparent: true
+				});
+
+				const cloud = new THREE.Mesh(geometry, material.clone());
+				
+				// Determine cloud layer based on distribution
+				const layerRoll = Math.random();
+				let cloudLayer;
+				if (layerRoll < cloudSettings.distribution.low) {
+					cloudLayer = 'low';
+				} else if (layerRoll < cloudSettings.distribution.low + cloudSettings.distribution.mid) {
+					cloudLayer = 'mid';
+				} else {
+					cloudLayer = 'high';
+				}
+
+				// Random position within terrain bounds
+				const halfSize = settings.terrain.worldSize / 2;
+				const heightRange = cloudSettings.height[cloudLayer];
+				const altitude = heightRange.min + Math.random() * (heightRange.max - heightRange.min);
+				
+				cloud.position.set(
+					(Math.random() - 0.5) * settings.terrain.worldSize * 0.9,
+					altitude,
+					(Math.random() - 0.5) * settings.terrain.worldSize * 0.9
+				);
+
+				// Random rotation
+				cloud.rotation.set(
+					Math.random() * Math.PI,
+					Math.random() * Math.PI,
+					Math.random() * Math.PI
+				);
+
+				// Adjust scale based on altitude
+				const baseScale = cloudSettings.size;
+				const scaleVariation = {
+					width: {
+						min: 0.3,
+						max: cloudLayer === 'high' ? 3.2 : (cloudLayer === 'mid' ? 2.8 : 2.4)
+					},
+					height: {
+						min: cloudLayer === 'high' ? 0.1 : (cloudLayer === 'mid' ? 0.15 : 0.2),
+						max: cloudLayer === 'high' ? 1.0 : (cloudLayer === 'mid' ? 1.4 : 1.8)
+					},
+					depth: {
+						min: 0.35,
+						max: cloudLayer === 'high' ? 2.8 : (cloudLayer === 'mid' ? 2.4 : 2.0)
+					}
+				};
+
+				// Calculate random dimensions with natural constraints
+				const width = baseScale * (scaleVariation.width.min + Math.random() * (scaleVariation.width.max - scaleVariation.width.min));
+				const height = baseScale * (scaleVariation.height.min + Math.random() * (scaleVariation.height.max - scaleVariation.height.min));
+				const depth = baseScale * (scaleVariation.depth.min + Math.random() * (scaleVariation.depth.max - scaleVariation.depth.min));
+
+				// Add some correlation between width and depth for more natural shapes
+				const aspectRatio = 0.7 + Math.random() * 0.6;
+				const finalDepth = depth * aspectRatio;
+
+				// Apply the scaling
+				cloud.scale.set(width, height, finalDepth);
+
+				// Set opacity based on altitude layer
+				const opacityRange = cloudSettings.opacity[cloudLayer];
+				const cloudOpacity = opacityRange.min + Math.random() * (opacityRange.max - opacityRange.min);
+				cloud.material.uniforms.opacity.value = cloudOpacity;
+
+				// Initialize cloud state
+				const state = {
+					phase: isInitial ? 'active' : 'spawning',
+					startTime: performance.now(),
+					targetThreshold: cloudSettings.threshold.min + 
+						Math.random() * (cloudSettings.threshold.max - cloudSettings.threshold.min),
+					originalPosition: cloud.position.clone(),
+					windOffset: new THREE.Vector3(),
+					layer: cloudLayer,
+					dimensions: {
+						width,
+						height,
+						depth: finalDepth
+					}
+				};
+				cloudLifecycle.states.set(cloud, state);
+
+				scene.add(cloud);
+				cloudClusters.push(cloud);
+			}
+
+			// Add cloud update function
+			function updateClouds(deltaTime) {
+				if (!cloudSettings.enabled) return;
+
+				const currentTime = performance.now();
+				const windDirection = windSettings.enabled ? windSettings.direction : new THREE.Vector3();
+
+				// Update fog settings for all clouds
+				cloudClusters.forEach(cloud => {
+					cloud.material.uniforms.fogDensity.value = settings.fogDensity;
+					cloud.material.uniforms.enableFog.value = settings.enableFog;
+				});
+
+				// Attempt to spawn new clouds
+				if (currentTime - cloudLifecycle.lastSpawnTime > cloudLifecycle.spawnInterval) {
+					cloudLifecycle.lastSpawnTime = currentTime;
+					
+					// Only spawn if below max count
+					if (cloudClusters.length < cloudLifecycle.maxClouds && Math.random() < 0.3) {
+						createCloud(cloudClusters[0].material.uniforms.map.value);
+					}
+				}
+
+				// Update each cloud
+				for (let i = cloudClusters.length - 1; i >= 0; i--) {
+					const cloud = cloudClusters[i];
+					const state = cloudLifecycle.states.get(cloud);
+					
+					if (!state) continue;
+
+					const timeSinceStart = currentTime - state.startTime;
+					
+					// Update cloud phase and threshold
+					switch (state.phase) {
+						case 'spawning':
+							const spawnProgress = Math.min(1, timeSinceStart / cloudLifecycle.fadeInDuration);
+							cloud.material.uniforms.threshold.value = 
+								1.0 - (1.0 - state.targetThreshold) * spawnProgress;
+							
+							if (spawnProgress >= 1) {
+								state.phase = 'active';
+								state.startTime = currentTime;
+							}
+							break;
+
+						case 'active':
+							// Randomly decide to despawn
+							if (Math.random() < 0.0001) {
+								state.phase = 'despawning';
+								state.startTime = currentTime;
+							}
+							break;
+
+						case 'despawning':
+							const despawnProgress = Math.min(1, timeSinceStart / cloudLifecycle.fadeOutDuration);
+							cloud.material.uniforms.threshold.value = 
+								state.targetThreshold + (1.0 - state.targetThreshold) * despawnProgress;
+							
+							if (despawnProgress >= 1) {
+								scene.remove(cloud);
+								cloudClusters.splice(i, 1);
+								cloudLifecycle.states.delete(cloud);
+								continue;
+							}
+							break;
+					}
+
+					// Update wind effect
+					if (windSettings.enabled && state.phase === 'active') {
+						// Calculate wind influence based on height
+						const heightFactor = (cloud.position.y - settings.minHeight) / 1000;
+						const windStrength = windSettings.speed * heightFactor * deltaTime;
+						
+						// Update wind offset
+						state.windOffset.addScaledVector(windDirection, windStrength);
+						
+						// Apply wind offset to position
+						cloud.position.copy(state.originalPosition).add(state.windOffset);
+						
+						// Wrap position when cloud moves too far
+						const halfSize = settings.terrain.worldSize / 2;
+						if (Math.abs(state.windOffset.x) > settings.terrain.worldSize) {
+							state.originalPosition.x = -Math.sign(state.windOffset.x) * halfSize * 0.9;
+							state.windOffset.x = 0;
+						}
+						if (Math.abs(state.windOffset.z) > settings.terrain.worldSize) {
+							state.originalPosition.z = -Math.sign(state.windOffset.z) * halfSize * 0.9;
+							state.windOffset.z = 0;
+						}
+					}
+
+					// Update shader uniforms
+					cloud.material.uniforms.frame.value++;
+					cloud.material.uniforms.cameraPos.value.copy(camera.position);
+				}
+			}
+
+			// Add ring initialization function
+			function initRings() {
+				// Create ring geometry and material
+				const geometry = new THREE.TorusGeometry(
+					ringSettings.radius,
+					ringSettings.tubeRadius,
+					ringSettings.segments,
+					ringSettings.segments
+				);
+				const material = new THREE.MeshBasicMaterial({
+					color: ringSettings.color,
+					transparent: true,
+					opacity: 0.8
+				});
+
+				// Create initial rings
+				for (let i = 0; i < ringSettings.count; i++) {
+					const ring = new THREE.Mesh(geometry, material.clone());
+					placeRingInWorld(ring);
+					ring.userData.cleared = false;
+					ringSettings.rings.push(ring);
+					scene.add(ring);
+				}
+			}
+
+			// Add ring placement function
+			function placeRingInWorld(ring) {
+				const halfSize = settings.terrain.worldSize * 0.4; // Use 40% of terrain size
+				let validPosition = false;
+				let attempts = 0;
+				const maxAttempts = 50;
+				const terrainBuffer = 100; // Minimum height above terrain
+
+				while (!validPosition && attempts < maxAttempts) {
+					// Generate random position
+					const position = new THREE.Vector3(
+						(Math.random() - 0.5) * halfSize,
+						ringSettings.minSpawnHeight + Math.random() * (ringSettings.maxSpawnHeight - ringSettings.minSpawnHeight),
+						(Math.random() - 0.5) * halfSize
+					);
+
+					// Check terrain height at this position
+					const terrainHeight = getTerrainHeightAtPosition(position.x, position.z);
+					
+					// Ensure ring is not too close to terrain and not too high
+					if (position.y < terrainHeight + terrainBuffer || position.y > ringSettings.maxSpawnHeight) {
+						attempts++;
+						continue;
+					}
+
+					// Check distance from other rings
+					validPosition = true;
+					for (const otherRing of ringSettings.rings) {
+						if (otherRing !== ring && otherRing.position.distanceTo(position) < ringSettings.minDistanceApart) {
+							validPosition = false;
+							break;
+						}
+					}
+
+					if (validPosition) {
+						ring.position.copy(position);
+						
+						// Random rotation (but keep ring mostly vertical)
+						ring.rotation.y = Math.random() * Math.PI * 2;
+						ring.rotation.x = (Math.random() - 0.5) * Math.PI * 0.15; // Reduced tilt
+					}
+
+					attempts++;
+				}
+
+				if (!validPosition) {
+					console.warn('Could not find valid ring position after', maxAttempts, 'attempts');
+					// Place at a safe default position if no valid position found
+					ring.position.set(0, ringSettings.minSpawnHeight * 2, 0);
+				}
+			}
+
+			// Add ring update function to render()
+			function updateRings(deltaTime) {
+				if (!ringSettings.enabled || settings.crashed) return;
+
+				const playerPosition = isThirdPerson ? playerModel.position : camera.position;
+				const lookDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+
+				ringSettings.rings.forEach(ring => {
+					// Vector from player to ring
+					const toRing = ring.position.clone().sub(playerPosition);
+					const distanceToRing = toRing.length();
+
+					// Check if player is approaching ring
+					const approachAngle = toRing.normalize().dot(lookDirection);
+					const isApproaching = approachAngle > 0.7; // Player is facing roughly toward ring
+
+					// Update ring color based on state
+					if (!ring.userData.cleared) {
+						if (isApproaching && distanceToRing < 200) {
+							ring.material.color.setHex(ringSettings.activeColor);
+							ring.material.opacity = 1;
+						} else {
+							ring.material.color.setHex(ringSettings.color);
+							ring.material.opacity = 0.8;
+						}
+
+						// Check for ring clearance
+						if (distanceToRing < ringSettings.detectionRadius && isApproaching) {
+							ring.userData.cleared = true;
+							ring.material.color.setHex(ringSettings.clearedColor);
+							ring.material.opacity = 0.4;
+							ringSettings.clearedRings++;
+
+							// Apply speed boost
+							ringSettings.currentBoost.active = true;
+							ringSettings.currentBoost.endTime = performance.now() + ringSettings.boostDuration;
+							settings.currentSpeed = Math.min(
+								settings.maxSpeed,
+								settings.currentSpeed + ringSettings.speedBoost
+							);
+
+							// Respawn ring after delay
+							setTimeout(() => {
+								placeRingInWorld(ring);
+								ring.userData.cleared = false;
+							}, ringSettings.respawnTime);
+						}
+					}
+				});
+
+				// Handle speed boost decay
+				if (ringSettings.currentBoost.active && performance.now() > ringSettings.currentBoost.endTime) {
+					ringSettings.currentBoost.active = false;
+				}
+			}
+
+			// Add helper function to get terrain height at a position
+			function getTerrainHeightAtPosition(x, z) {
+				const halfSize = settings.terrain.worldSize / 2;
+				
+				// Convert world position to terrain data coordinates
+				const normalizedX = (x + halfSize) / settings.terrain.worldSize;
+				const normalizedZ = (z + halfSize) / settings.terrain.worldSize;
+				
+				// Convert to grid coordinates
+				const gridX = Math.floor(normalizedX * (worldWidth - 1));
+				const gridZ = Math.floor(normalizedZ * (worldDepth - 1));
+				
+				// Ensure coordinates are within bounds
+				if (gridX >= 0 && gridX < worldWidth && gridZ >= 0 && gridZ < worldDepth) {
+					const dataIndex = gridZ * worldWidth + gridX;
+					return settings.terrain.data[dataIndex] * settings.terrain.scale;
+				}
+				
+				return 0; // Return 0 if out of bounds
+			}
+
+		</script>
+
+	</body>
+</html>
