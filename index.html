@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 	<head>
-		<title>three.js webgl - geometry - terrain + fog</title>
+		<title>Wing Man</title>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
 		<link type="text/css" rel="stylesheet" href="main.css">
@@ -51,7 +51,7 @@
 	<body>
 
 		<div id="container"></div>
-		<div id="info"><a href="https://threejs.org" target="_blank" rel="noopener">Wing Man - Fly a hang glider <br />(Press V to change view | Navigate with your mouse | Wind affects your flight path and speed)</div>
+		<div id="info">Wing Man - Fly a hang glider <br />(Press V to change view | Navigate with your mouse | Wind affects your flight path and speed)</div>
 		
 		<div id="crash-dialog">
 			<h2>You Crashed!</h2>
@@ -271,6 +271,12 @@
 					offset: new THREE.Vector3(0, -1, 0), // Position relative to camera
 					scale: new THREE.Vector3(1, 1, 1),   // Model scale
 					rotation: new THREE.Vector3(0, 0, 0)  // Model rotation in radians
+				},
+				// Audio settings
+				audio: {
+					enabled: true,
+					volume: 0.5,
+					muted: false
 				}
 			};
 
@@ -318,6 +324,173 @@
 					endTime: 0
 				}
 			};
+
+			// Audio system settings
+			const audioSettings = {
+				initialized: false,
+				fadeInDuration: 3000, // 3 seconds fade in
+				wind: {
+					enabled: true,
+					baseFrequency: 100,
+					maxFrequency: 800,
+					Q: 1.5,
+					baseGain: 0.2,
+					maxGain: 0.4,
+					gustGain: 0.6
+				},
+				flag: {
+					enabled: true,
+					baseFrequency: 200,
+					maxFrequency: 1200,
+					Q: 2.0,
+					baseGain: 0.15,
+					maxGain: 0.3
+				}
+			};
+
+			// Audio context and nodes
+			let audioContext;
+			let windGainNode;
+			let flagGainNode;
+			let windFilter;
+			let flagFilter;
+			let windOscillator;
+			let flagOscillator;
+			let noiseBuffer;
+
+			// Function to create noise buffer for wind sound
+			function createNoiseBuffer() {
+				const bufferSize = audioContext.sampleRate * 2; // 2 seconds of noise
+				const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+				const data = buffer.getChannelData(0);
+				
+				for (let i = 0; i < bufferSize; i++) {
+					// Brown noise generation (deeper than white noise)
+					data[i] = (Math.random() * 2 - 1) * 0.5;
+					if (i > 0) {
+						data[i] = (data[i] + (0.02 * data[i-1])) / 1.02;
+					}
+				}
+				
+				return buffer;
+			}
+
+			// Function to initialize audio system
+			async function initAudioSystem() {
+				if (audioSettings.initialized) return;
+				
+				try {
+					// Ensure audio context is in running state
+					if (audioContext.state !== 'running') {
+						await audioContext.resume();
+						console.log('🎵 AudioContext resumed');
+					}
+					
+					// Create gain nodes with zero initial gain
+					windGainNode = audioContext.createGain();
+					flagGainNode = audioContext.createGain();
+					windGainNode.gain.value = 0;
+					flagGainNode.gain.value = 0;
+					
+					// Create filters
+					windFilter = audioContext.createBiquadFilter();
+					windFilter.type = 'bandpass';
+					windFilter.frequency.value = audioSettings.wind.baseFrequency;
+					windFilter.Q.value = audioSettings.wind.Q;
+					
+					flagFilter = audioContext.createBiquadFilter();
+					flagFilter.type = 'bandpass';
+					flagFilter.frequency.value = audioSettings.flag.baseFrequency;
+					flagFilter.Q.value = audioSettings.flag.Q;
+					
+					// Create noise buffer
+					noiseBuffer = createNoiseBuffer();
+					
+					// Create and configure wind sound
+					const windSource = audioContext.createBufferSource();
+					windSource.buffer = noiseBuffer;
+					windSource.loop = true;
+					windSource.connect(windFilter);
+					windFilter.connect(windGainNode);
+					windGainNode.connect(audioContext.destination);
+					
+					// Create and configure flag sound (higher pitched noise)
+					const flagSource = audioContext.createBufferSource();
+					flagSource.buffer = noiseBuffer;
+					flagSource.loop = true;
+					flagSource.playbackRate.value = 2; // Higher pitch for flag sound
+					flagSource.connect(flagFilter);
+					flagFilter.connect(flagGainNode);
+					flagGainNode.connect(audioContext.destination);
+					
+					// Start the sources only after all connections are made
+					windSource.start();
+					flagSource.start();
+					
+					// Fade in the audio
+					const startTime = audioContext.currentTime;
+					windGainNode.gain.setValueAtTime(0, startTime);
+					flagGainNode.gain.setValueAtTime(0, startTime);
+					windGainNode.gain.linearRampToValueAtTime(
+						audioSettings.wind.baseGain, 
+						startTime + audioSettings.fadeInDuration/1000
+					);
+					flagGainNode.gain.linearRampToValueAtTime(
+						audioSettings.flag.baseGain, 
+						startTime + audioSettings.fadeInDuration/1000
+					);
+					
+					audioSettings.initialized = true;
+					console.log('🔊 Audio system initialized successfully');
+					
+					// Log audio context state
+					console.log(`🎵 AudioContext state: ${audioContext.state}`);
+					
+				} catch (error) {
+					console.error('Error initializing audio system:', error);
+					audioSettings.initialized = false;
+				}
+			}
+
+			// Function to update wind sound
+			function updateWindSound() {
+				if (!audioSettings.initialized || !audioSettings.wind.enabled) return;
+				
+				// Calculate wind intensity based on wind speed and gusts
+				const windIntensity = windSettings.speed / windSettings.dynamics.maxSpeed;
+				const gustIntensity = windSettings.gust.active ? windSettings.gust.intensity : 0;
+				
+				// Update filter frequency based on wind speed
+				const targetFreq = audioSettings.wind.baseFrequency + 
+					(audioSettings.wind.maxFrequency - audioSettings.wind.baseFrequency) * windIntensity;
+				windFilter.frequency.setTargetAtTime(targetFreq, audioContext.currentTime, 0.1);
+				
+				// Update gain based on wind speed and gusts
+				const targetGain = audioSettings.wind.baseGain + 
+					(audioSettings.wind.maxGain - audioSettings.wind.baseGain) * windIntensity +
+					(audioSettings.wind.gustGain - audioSettings.wind.baseGain) * gustIntensity;
+				windGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.05);
+			}
+
+			// Function to update flag sound
+			function updateFlagSound() {
+				if (!audioSettings.initialized || !audioSettings.flag.enabled) return;
+				
+				// Calculate flag intensity based on speed and bank angle
+				const speedRatio = settings.currentSpeed / settings.maxSpeed;
+				const bankIntensity = Math.abs(settings.bankTracking.currentVisualBank) / 45;
+				const flagIntensity = Math.max(speedRatio, bankIntensity);
+				
+				// Update filter frequency based on speed and bank
+				const targetFreq = audioSettings.flag.baseFrequency + 
+					(audioSettings.flag.maxFrequency - audioSettings.flag.baseFrequency) * flagIntensity;
+				flagFilter.frequency.setTargetAtTime(targetFreq, audioContext.currentTime, 0.1);
+				
+				// Update gain based on speed and bank
+				const targetGain = audioSettings.flag.baseGain + 
+					(audioSettings.flag.maxGain - audioSettings.flag.baseGain) * flagIntensity;
+				flagGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.05);
+			}
 
 			init();
 
@@ -656,7 +829,37 @@
 
 				window.addEventListener( 'resize', onWindowResize );
 
-				// Add after initClouds() call in init()
+				// Add audio initialization on user interaction
+				const initAudioOnInteraction = async (event) => {
+					try {
+						// Create audio context only on first interaction
+						if (!audioContext) {
+							audioContext = new (window.AudioContext || window.webkitAudioContext)();
+							// Resume audio context if it's in suspended state
+							if (audioContext.state === 'suspended') {
+								await audioContext.resume();
+							}
+						}
+						
+						// Initialize audio system
+						await initAudioSystem();
+						
+						// Only remove listeners if initialization was successful
+						if (audioSettings.initialized) {
+							document.removeEventListener('click', initAudioOnInteraction);
+							document.removeEventListener('keydown', initAudioOnInteraction);
+							console.log('🎵 Audio initialized successfully on user interaction');
+						}
+					} catch (error) {
+						console.error('Failed to initialize audio:', error);
+					}
+				};
+
+				// Add event listeners for user interaction
+				document.addEventListener('click', initAudioOnInteraction);
+				document.addEventListener('keydown', initAudioOnInteraction);
+
+				// Add rings initialization
 				initRings();
 
 			}
@@ -908,6 +1111,65 @@
 				ringFolder.add(ringSettings, 'boostDuration', 500, 5000).name('Boost Duration (ms)');
 				ringFolder.add(ringSettings, 'clearedRings').name('Rings Cleared').listen();
 				ringFolder.open();
+
+				// Add audio controls
+				const audioFolder = gui.addFolder('Audio Controls');
+				audioFolder.add(settings.audio, 'enabled')
+					.name('Audio Enabled')
+					.onChange(() => {
+						audioManager.updateAll();
+						if (settings.logging.enabled) {
+							console.log(`🎵 Audio ${settings.audio.enabled ? 'enabled' : 'disabled'}`);
+						}
+					});
+
+				audioFolder.add(settings.audio, 'volume', 0, 1)
+					.step(0.1)
+					.name('Volume')
+					.onChange((value) => {
+						console.log(`🎚️ Volume change requested: ${value}`);
+						settings.audio.volume = value;
+						
+						// Direct volume setting for all audio elements
+						audioManager.elements.forEach((audio, index) => {
+							if (audio) {
+								audio.volume = value;
+								console.log(`🔊 Set volume for audio ${index}: ${value}`);
+							}
+						});
+					});
+
+				audioFolder.add(settings.audio, 'muted')
+					.name('Muted')
+					.onChange((value) => {
+						console.log(`🔇 Mute change requested: ${value}`);
+						settings.audio.muted = value;
+						
+						// Direct mute setting for all audio elements
+						audioManager.elements.forEach((audio, index) => {
+							if (audio) {
+								audio.muted = value;
+								console.log(`${value ? '🔇' : '🔊'} Set muted for audio ${index}: ${value}`);
+							}
+						});
+					});
+
+				// Debug function to check audio elements
+				function debugAudioStatus() {
+					console.log('🔍 Audio Manager Status:', {
+						registeredElements: audioManager.elements.length,
+						settings: settings.audio,
+						elements: audioManager.elements.map((audio, index) => ({
+							index,
+							volume: audio.volume,
+							muted: audio.muted,
+							src: audio.src
+						}))
+					});
+				}
+
+				// Add debug button to GUI
+				audioFolder.add({ debugAudio: debugAudioStatus }, 'debugAudio').name('Debug Audio');
 			}
 
 			function onWindowResize() {
@@ -1482,6 +1744,12 @@
 					// Update clouds
 					updateClouds(deltaTime);
 
+					// Update wind and flag sounds
+					if (audioSettings.initialized) {
+						updateWindSound();
+						updateFlagSound();
+					}
+
 					// Calculate wind effect on player
 					if (windSettings.enabled) {
 						const lookDirection = new THREE.Vector3(0, 0, -1);
@@ -1604,6 +1872,10 @@
 				const posX = isThirdPerson ? playerModel.position.x : camera.position.x;
 				const posZ = isThirdPerson ? playerModel.position.z : camera.position.z;
 				const posY = isThirdPerson ? playerModel.position.y : camera.position.y;
+
+				// Add collision height offset to match visual camera height
+				const collisionHeightOffset = 5; // Offset collision point below camera
+				const collisionY = posY - collisionHeightOffset;
 				
 				// Convert world position to terrain data coordinates
 				const halfSize = settings.terrain.worldSize / 2;
@@ -1622,12 +1894,12 @@
 					const terrainHeight = settings.terrain.data[dataIndex] * settings.terrain.scale;
 					
 					const collisionBuffer = 5;
-					if (posY <= terrainHeight + collisionBuffer) {
+					if (collisionY <= terrainHeight + collisionBuffer) {
 						if (!settings.crashed) {
-							console.log(`💥 COLLISION DETECTED: Player (${posY.toFixed(1)}m) hit terrain (${terrainHeight.toFixed(1)}m)`);
+							console.log(`💥 COLLISION DETECTED: Player (${collisionY.toFixed(1)}m) hit terrain (${terrainHeight.toFixed(1)}m)`);
 							
 							// Store crash position
-							settings.crashPosition = new THREE.Vector3(posX, terrainHeight + collisionBuffer, posZ);
+							settings.crashPosition = new THREE.Vector3(posX, terrainHeight + collisionBuffer + collisionHeightOffset, posZ);
 							
 							// Force immediate position update to prevent clipping
 							camera.position.copy(settings.crashPosition);
@@ -1647,8 +1919,18 @@
 			function playerCrashed() {
 				settings.crashed = true;
 				
-				// Play crash sound if available
-				// (Sound implementation could be added here)
+				// Reset audio on crash
+				if (audioSettings.initialized) {
+					// Immediately silence flag sound since there's no movement
+					flagGainNode.gain.setTargetAtTime(0, audioContext.currentTime, 0.1);
+					
+					// Reduce wind sound to minimum
+					windGainNode.gain.setTargetAtTime(
+						audioSettings.wind.baseGain * 0.5, // Reduced base wind sound
+						audioContext.currentTime,
+						0.2
+					);
+				}
 				
 				// Show crash dialog
 				const crashDialog = document.getElementById('crash-dialog');
@@ -1680,6 +1962,23 @@
 				
 				// Reset crash state
 				settings.crashed = false;
+				
+				// Reset audio to normal operation
+				if (audioSettings.initialized) {
+					// Fade flag sound back in from silence
+					flagGainNode.gain.setTargetAtTime(
+						audioSettings.flag.baseGain,
+						audioContext.currentTime,
+						0.5
+					);
+					
+					// Reset wind sound to normal base level
+					windGainNode.gain.setTargetAtTime(
+						audioSettings.wind.baseGain,
+						audioContext.currentTime,
+						0.5
+					);
+				}
 				
 				// Hide crash dialog with explicit styles
 				const crashDialog = document.getElementById('crash-dialog');
@@ -2460,6 +2759,73 @@
 				}
 				
 				return 0; // Return 0 if out of bounds
+			}
+
+			// Add audio playback function
+			function playAudio(audioElement) {
+				if (settings.audio.enabled && !settings.audio.muted) {
+					// Adjust volume before playing
+					audioElement.volume = settings.audio.volume;
+					audioElement.play();
+					
+					if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+						console.log(`🔊 Playing audio: ${audioElement.src} (Volume: ${settings.audio.volume.toFixed(2)})`);
+					}
+				}
+			}
+
+			// Add audio pause function
+			function pauseAudio(audioElement) {
+				if (audioElement.playing) {
+					audioElement.pause();
+					
+					if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+						console.log(`🔇 Stopped audio: ${audioElement.src}`);
+					}
+				}
+			}
+
+			// Create audio manager to handle all game audio
+			const audioManager = {
+				elements: [], // Stores all audio elements
+				
+				// Register audio element to be managed
+				register(audioElement) {
+					this.elements.push(audioElement);
+					this.updateAudioElement(audioElement);
+					
+					if (settings.logging.enabled) {
+						console.log(`🎵 Registered audio element: ${audioElement.src}`);
+					}
+				},
+				
+				// Update single audio element with current settings
+				updateAudioElement(audioElement) {
+					audioElement.volume = settings.audio.muted ? 0 : settings.audio.volume;
+					audioElement.muted = settings.audio.muted;
+				},
+				
+				// Update all registered audio elements
+				updateAll() {
+					this.elements.forEach(audio => this.updateAudioElement(audio));
+					
+					if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+						console.log(`🔊 Updated all audio - Volume: ${settings.audio.volume.toFixed(2)}, Muted: ${settings.audio.muted}`);
+					}
+				}
+			};
+
+			// Find where audio elements are created and add this line after creation:
+			audioManager.register(audioElement);
+
+			// When playing audio, update to check settings:
+			if (settings.audio.enabled && !settings.audio.muted) {
+				audioElement.volume = settings.audio.volume;
+				audioElement.play();
+				
+				if (settings.logging.enabled && (performance.now() - settings.logging.lastLogTime > settings.logging.interval)) {
+					console.log(`🎵 Playing audio: ${audioElement.src.split('/').pop()} (Volume: ${settings.audio.volume.toFixed(2)})`);
+				}
 			}
 
 		</script>
