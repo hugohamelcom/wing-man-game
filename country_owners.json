@@ -1,0 +1,12 @@
+[
+    {
+        "country": "US",
+        "buyoff": "1",
+        "owner": "John Doe"
+    },
+    {
+        "country": "GB",
+        "buyoff": "2",
+        "owner": "Jane Doe"
+    }
+]
