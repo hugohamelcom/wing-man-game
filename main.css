@@ -91,3 +91,5 @@ a, button, input, select {
 }
 
 .lil-gui {display: none !important;}
+
+#container canvas + div {display: none !important;}
