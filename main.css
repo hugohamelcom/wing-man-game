@@ -90,6 +90,5 @@ a, button, input, select {
 	padding: 10px;
 }
 
-.lil-gui {display: none !important;}
+.lil-gui, #container canvas + div {display: none !important;}
 
-#container canvas + div {display: none !important;}
