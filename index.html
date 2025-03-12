@@ -47,6 +47,18 @@
 				background-color: #c08871;
 			}
 		</style>
+
+		
+		<script>
+			var hsscript = document.createElement("script");
+			hsscript.id = "wphs";
+			hsscript.src = "https://cdn.jsdelivr.net/npm/hockeystack@latest/hockeystack.min.js";
+			hsscript.async = 1;
+			hsscript.dataset.apikey = "73de0591a23abc349df93bf963c94a";
+			hsscript.dataset.cookieless = 1;
+			hsscript.dataset.autoIdentify = 1;
+			document.getElementsByTagName('head')[0].append(hsscript);
+		</script>
 	</head>
 	<body>
 
